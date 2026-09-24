@@ -1,0 +1,258 @@
+"""
+SQLAlchemy models. These mirror schema.sql exactly — the schema owns the
+real constraints/triggers; these classes are for reading and writing rows
+through the ORM. Generated columns (total_cost, total_amount) and
+trigger-maintained fields are marked read-only from the app's side.
+"""
+from sqlalchemy import (
+    Column, Integer, BigInteger, String, Text, Boolean, Numeric, Date, DateTime,
+    ForeignKey, Enum, UniqueConstraint, func, Computed
+)
+from .database import Base
+
+# ---- Enums (must match the Postgres ENUM types in schema.sql) ----
+USER_ROLES = ("attendant", "supervisor", "manager", "director", "developer")
+PAYMENT_STATUSES = ("unpaid", "partial", "paid")
+PAYMENT_METHODS = ("cash", "card", "mobile_money", "account")
+CUSTOMER_TXN_TYPES = ("fill_up", "payment", "adjustment")
+
+
+class Company(Base):
+    __tablename__ = "companies"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(150), nullable=False)
+    address = Column(Text)
+    latitude = Column(Numeric(10, 7))
+    longitude = Column(Numeric(10, 7))
+    phone = Column(String(30))
+    email = Column(String(150))
+    slug = Column(String(100), unique=True, nullable=False)
+    url = Column(String(255))
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class CompanyBranch(Base):
+    __tablename__ = "company_branches"
+    __table_args__ = (UniqueConstraint("company_id", "branch_name"),)
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)
+    branch_name = Column(String(150), nullable=False)
+    phone = Column(String(30))
+    address = Column(Text)
+    latitude = Column(Numeric(10, 7))
+    longitude = Column(Numeric(10, 7))
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)
+    branch_id = Column(Integer, ForeignKey("company_branches.id"))  # NULL = all branches
+    username = Column(String(50), unique=True, nullable=False)
+    password_hash = Column(String(255), nullable=False)
+    full_name = Column(String(150), nullable=False)
+    role = Column(Enum(*USER_ROLES, name="user_role"), nullable=False, default="attendant")
+    phone = Column(String(30))
+    email = Column(String(150))
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class Supplier(Base):
+    __tablename__ = "suppliers"
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)
+    name = Column(String(150), nullable=False)
+    contact_person = Column(String(150))
+    phone = Column(String(30))
+    email = Column(String(150))
+    address = Column(Text)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_by = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class FuelType(Base):
+    __tablename__ = "fuel_types"
+    __table_args__ = (UniqueConstraint("company_id", "name"),)
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)
+    name = Column(String(50), nullable=False)
+    default_cost = Column(Numeric(12, 2), nullable=False, default=0)        # HQ reference cost
+    default_sell_price = Column(Numeric(12, 2), nullable=False, default=0)  # HQ reference sell price
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_by = Column(Integer, ForeignKey("users.id"))
+
+
+class BranchFuelPrice(Base):
+    """The price actually used when a branch sells this fuel type — seeded
+    from FuelType.default_cost/default_sell_price, then moves independently
+    per branch (see PATCH /fuel-types/branch-prices)."""
+    __tablename__ = "branch_fuel_prices"
+    branch_id = Column(Integer, ForeignKey("company_branches.id"), primary_key=True)
+    fuel_type_id = Column(Integer, ForeignKey("fuel_types.id"), primary_key=True)
+    current_cost = Column(Numeric(12, 2), nullable=False, default=0)
+    sell_price = Column(Numeric(12, 2), nullable=False, default=0)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_by = Column(Integer, ForeignKey("users.id"))
+
+
+class FuelStock(Base):
+    __tablename__ = "fuel_stock"
+    branch_id = Column(Integer, ForeignKey("company_branches.id"), primary_key=True)
+    fuel_type_id = Column(Integer, ForeignKey("fuel_types.id"), primary_key=True)
+    current_volume = Column(Numeric(14, 3), nullable=False, default=0)
+    capacity = Column(Numeric(14, 3))  # tank/storage capacity; NULL = not tracked
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class FuelReceipt(Base):
+    __tablename__ = "fuel_receipts"
+    id = Column(Integer, primary_key=True)
+    branch_id = Column(Integer, ForeignKey("company_branches.id"), nullable=False)
+    supplier_id = Column(Integer, ForeignKey("suppliers.id"), nullable=False)
+    fuel_type_id = Column(Integer, ForeignKey("fuel_types.id"), nullable=False)
+    volume = Column(Numeric(14, 3), nullable=False)
+    cost_per_liter = Column(Numeric(12, 2), nullable=False)
+    total_cost = Column(Numeric(14, 2), Computed("volume * cost_per_liter", persisted=True))  # generated column
+    invoice_reference = Column(String(100), nullable=False)
+    payment_status = Column(Enum(*PAYMENT_STATUSES, name="payment_status"), nullable=False, default="unpaid")
+    amount_paid = Column(Numeric(14, 2), nullable=False, default=0)  # trigger-maintained — read only
+    received_date = Column(Date, nullable=False)
+    received_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    notes = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class SupplierPayment(Base):
+    __tablename__ = "supplier_payments"
+    id = Column(Integer, primary_key=True)
+    receipt_id = Column(Integer, ForeignKey("fuel_receipts.id"), nullable=False)
+    amount = Column(Numeric(14, 2), nullable=False)
+    payment_date = Column(Date, nullable=False)
+    paid_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    notes = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class Customer(Base):
+    __tablename__ = "customers"
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)
+    company_name = Column(String(150))  # the customer's OWN business name
+    name = Column(String(150), nullable=False)
+    phone = Column(String(30))
+    address = Column(Text)
+    email = Column(String(150))
+    monthly_limit = Column(Numeric(14, 2), nullable=False, default=0)
+    current_balance = Column(Numeric(14, 2), nullable=False, default=0)  # trigger-maintained — read only
+    is_active = Column(Boolean, nullable=False, default=True)
+    registered_by = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class Sale(Base):
+    __tablename__ = "sales"
+    id = Column(Integer, primary_key=True)
+    branch_id = Column(Integer, ForeignKey("company_branches.id"), nullable=False)
+    fuel_type_id = Column(Integer, ForeignKey("fuel_types.id"), nullable=False)
+    customer_id = Column(Integer, ForeignKey("customers.id"))
+    volume = Column(Numeric(14, 3), nullable=False)
+    cost_price = Column(Numeric(12, 2), nullable=False)
+    sell_price = Column(Numeric(12, 2), nullable=False)
+    total_amount = Column(Numeric(14, 2), Computed("volume * sell_price", persisted=True))  # generated column
+    payment_method = Column(Enum(*PAYMENT_METHODS, name="payment_method"), nullable=False)
+    served_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    sale_date = Column(DateTime(timezone=True), server_default=func.now())
+    notes = Column(Text)
+
+
+class CustomerTransaction(Base):
+    __tablename__ = "customer_transactions"
+    id = Column(Integer, primary_key=True)
+    branch_id = Column(Integer, ForeignKey("company_branches.id"), nullable=False)
+    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False)
+    txn_type = Column(Enum(*CUSTOMER_TXN_TYPES, name="customer_txn_type"), nullable=False)
+    sale_id = Column(Integer, ForeignKey("sales.id"))
+    amount = Column(Numeric(14, 2), nullable=False)
+    balance_after = Column(Numeric(14, 2))  # trigger-set for payment/adjustment — read only on those
+    recorded_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    transaction_date = Column(DateTime(timezone=True), server_default=func.now())
+    notes = Column(Text)
+
+
+class ExpenseCategory(Base):
+    __tablename__ = "expense_categories"
+    __table_args__ = (UniqueConstraint("company_id", "name"),)
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)
+    name = Column(String(100), nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+
+
+class Expense(Base):
+    __tablename__ = "expenses"
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)
+    branch_id = Column(Integer, ForeignKey("company_branches.id"))  # NULL = company-wide expense
+    name = Column(String(150), nullable=False)
+    category_id = Column(Integer, ForeignKey("expense_categories.id"), nullable=False)
+    amount = Column(Numeric(14, 2), nullable=False)
+    reference = Column(String(100))
+    notes = Column(Text)
+    receipt_id = Column(Integer, ForeignKey("fuel_receipts.id"))
+    expense_date = Column(Date, nullable=False)
+    recorded_by = Column(Integer, ForeignKey("users.id"))
+    is_system_generated = Column(Boolean, nullable=False, default=False)  # read only — set by trigger
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class DailyFuelReport(Base):
+    __tablename__ = "daily_fuel_reports"
+    id = Column(Integer, primary_key=True)
+    branch_id = Column(Integer, ForeignKey("company_branches.id"), nullable=False)
+    report_date = Column(Date, nullable=False)
+    fuel_type_id = Column(Integer, ForeignKey("fuel_types.id"), nullable=False)
+    opening_stock = Column(Numeric(14, 3), nullable=False, default=0)
+    received_volume = Column(Numeric(14, 3), nullable=False, default=0)
+    sold_volume = Column(Numeric(14, 3), nullable=False, default=0)
+    credit_volume = Column(Numeric(14, 3), nullable=False, default=0)
+    closing_stock = Column(Numeric(14, 3), nullable=False, default=0)
+    total_purchase_amount = Column(Numeric(14, 2), nullable=False, default=0)
+    total_sales_amount = Column(Numeric(14, 2), nullable=False, default=0)
+    credit_amount = Column(Numeric(14, 2), nullable=False, default=0)
+    generated_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class DailyFinancialSummary(Base):
+    __tablename__ = "daily_financial_summary"
+    id = Column(Integer, primary_key=True)
+    branch_id = Column(Integer, ForeignKey("company_branches.id"), nullable=False)
+    summary_date = Column(Date, nullable=False)
+    opening_balance = Column(Numeric(14, 2), nullable=False, default=0)
+    cash_sales_income = Column(Numeric(14, 2), nullable=False, default=0)
+    customer_payments_income = Column(Numeric(14, 2), nullable=False, default=0)
+    total_income = Column(Numeric(14, 2), nullable=False, default=0)
+    total_expenses = Column(Numeric(14, 2), nullable=False, default=0)
+    closing_balance = Column(Numeric(14, 2), nullable=False, default=0)
+    generated_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class ActivityLog(Base):
+    """Append-only audit trail — HQ's window into what happened at every
+    branch. Rows are written only by database triggers; the app never
+    inserts here directly."""
+    __tablename__ = "activity_log"
+    id = Column(BigInteger, primary_key=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)
+    branch_id = Column(Integer, ForeignKey("company_branches.id"))  # NULL = company-wide action
+    user_id = Column(Integer, ForeignKey("users.id"))
+    activity_type = Column(String(50), nullable=False)
+    description = Column(Text)
+    amount = Column(Numeric(14, 2))
+    reference_table = Column(String(50))
+    reference_id = Column(Integer)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

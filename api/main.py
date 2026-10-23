@@ -4,8 +4,13 @@ Run with: uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
 
 Interactive docs (great for wiring up Flutter): http://localhost:8000/docs
 """
-from fastapi import FastAPI
+import os
+
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
+
+from .database import engine
 
 from .routers import (
     auth_router,
@@ -27,12 +32,13 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Allow the Flutter app (mobile/web/desktop) to call this API.
-# Lock this down to your actual app origin(s) in production.
+# Set CORS_ORIGINS to the deployed Flutter site's origin. Native mobile apps
+# do not use browser CORS. The wildcard is retained for local development.
+cors_origins = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "*").split(",") if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=cors_origins,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -51,5 +57,11 @@ app.include_router(reports_router.router)
 
 
 @app.get("/health", tags=["health"])
-def health_check():
+def health_check(check_database: bool = False):
+    if check_database:
+        try:
+            with engine.connect() as connection:
+                connection.execute(text("SELECT 1"))
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Database unavailable") from exc
     return {"status": "ok"}

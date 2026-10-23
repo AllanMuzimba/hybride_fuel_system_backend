@@ -1,0 +1,30 @@
+# Connect this Blueprint to the backend GitHub repository in Render.
+# Its second service builds the Flutter frontend from the separate repository.
+services:
+  - type: web
+    name: hybrid-fuel-api
+    runtime: python
+    branch: backend-main
+    plan: free
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: CORS_ORIGINS
+        sync: false
+
+  - type: web
+    name: hybrid-fuel-web
+    runtime: static
+    repo: https://github.com/AllanMuzimba/hybride_fuel_system
+    branch: main
+    buildCommand: ./scripts/build_render_web.sh
+    staticPublishPath: build/web
+    envVars:
+      - key: API_BASE_URL
+        sync: false

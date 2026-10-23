@@ -6,6 +6,9 @@ customer credit accounts, expenses (with invoices auto-expensed on payment),
 and reporting — every transaction stamped with the user, branch and company
 that did it.
 
+For GitHub deployment with a Flutter web frontend on Render and a Supabase
+Postgres database, see [DEPLOY_RENDER.md](DEPLOY_RENDER.md).
+
 ## 1. Tenancy model
 
 ```

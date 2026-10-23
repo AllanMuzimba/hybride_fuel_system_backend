@@ -1,0 +1,20 @@
+name: Keep Render API warm
+
+on:
+  schedule:
+    # Offset from the top of the hour to reduce GitHub scheduler delays.
+    - cron: '7,17,27,37,47,57 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  ping:
+    if: vars.RENDER_HEALTH_URL != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Ping API and database
+        env:
+          HEALTH_URL: ${{ vars.RENDER_HEALTH_URL }}
+        run: curl --fail --show-error --silent --max-time 120 "$HEALTH_URL"

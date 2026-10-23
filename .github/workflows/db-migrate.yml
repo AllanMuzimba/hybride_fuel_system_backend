@@ -46,7 +46,8 @@ jobs:
           fi
 
       - name: Apply migration
-        timeout 120s psql "$PG_CONN_STRING" -X -v ON_ERROR_STOP=1 -q -f "migrations/$MIGRATION_FILE"
+        run: |
+          timeout 120s psql "$PG_CONN_STRING" -X -v ON_ERROR_STOP=1 -q -f "migrations/$MIGRATION_FILE"
 
       - name: Verify migrated objects
         run: |

@@ -360,8 +360,12 @@ class CompanySalesSettings(Base):
     __tablename__ = "company_sales_settings"
     company_id = Column(Integer, ForeignKey("companies.id"), primary_key=True)
     kiosk_enabled = Column(Boolean, nullable=False, default=True)
-    kiosk_sell_roles = Column(JSON, nullable=False, default=lambda: ["manager", "supervisor"])
-    kiosk_view_roles = Column(JSON, nullable=False, default=lambda: ["manager", "supervisor"])
+    kiosk_sell_roles = Column(
+        JSON, nullable=False, default=lambda: ["manager", "supervisor", "developer"]
+    )
+    kiosk_view_roles = Column(
+        JSON, nullable=False, default=lambda: ["manager", "supervisor", "developer"]
+    )
     updated_by = Column(Integer, ForeignKey("users.id"))
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
 

@@ -12,7 +12,7 @@ from ..database import get_db
 from .shifts_router import require_on_shift, require_realtime_shift
 
 router = APIRouter(prefix="/kiosk", tags=["kiosk"])
-DEFAULT_ROLES = ["manager", "supervisor"]
+DEFAULT_ROLES = ["manager", "supervisor", "developer"]
 
 
 def _settings(db, company_id):

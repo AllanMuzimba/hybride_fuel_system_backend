@@ -55,8 +55,8 @@ CREATE TABLE IF NOT EXISTS kiosk_sale_items (
 CREATE TABLE IF NOT EXISTS company_sales_settings (
     company_id INT PRIMARY KEY REFERENCES companies(id),
     kiosk_enabled BOOLEAN NOT NULL DEFAULT TRUE,
-    kiosk_sell_roles JSONB NOT NULL DEFAULT '["manager","supervisor"]'::jsonb,
-    kiosk_view_roles JSONB NOT NULL DEFAULT '["manager","supervisor"]'::jsonb,
+    kiosk_sell_roles JSONB NOT NULL DEFAULT '["manager","supervisor","developer"]'::jsonb,
+    kiosk_view_roles JSONB NOT NULL DEFAULT '["manager","supervisor","developer"]'::jsonb,
     updated_by INT REFERENCES users(id),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

@@ -1,9 +1,16 @@
 # Deploy with Render and Layerbase
 
-The backend and Flutter frontend live in separate GitHub repositories. The
-`render.yaml` Blueprint in this backend repository creates a free Render web
-service for FastAPI and a free Render static site for the Flutter web build.
-Render deploys both from GitHub; the Render CLI is optional.
+The backend and Flutter frontend live in separate GitHub repositories. Both
+repositories are connected to Render and deploy automatically from GitHub:
+
+| Service | Live URL | Source branch |
+| --- | --- | --- |
+| FastAPI (`hybrid-fuel-api`) | https://hybrid-fuel-api.onrender.com | `hybride_fuel_system_backend:backend-main` |
+| Flutter web (`hybrid-fuel-web`) | https://hybrid-fuel-web.onrender.com | `hybride_fuel_system:main` |
+
+The services were created with the Render CLI. The `render.yaml` Blueprint is
+kept as a reproducible configuration for a fresh workspace; do not create it
+again in this workspace, because that would make duplicate services.
 
 The `hybrid_fuel` database already exists on Layerbase Cloud in its US East
 region, running stable PostgreSQL 18. Its full `schema.sql` was applied on
@@ -30,9 +37,10 @@ characters. Use the **direct** connection string for schema migrations and
 exports. The application uses the pooled URL and limits its own connection
 pool to leave room under Layerbase Free's 20-connection limit.
 
-The schema is already initialized. To create the first company, branch, and
-developer login, run this script interactively with the private API URL set
-in your environment or a local `.env` file (which Git ignores):
+The schema and first `Hybrid Fuel` company, `Main Branch`, and `fuel_admin`
+developer login are already initialized. For a new installation on an empty
+database, run this script interactively with the private database URL set in
+your environment or a local `.env` file (which Git ignores):
 
 ```bash
 python create_first_company.py
@@ -44,7 +52,7 @@ transaction request IDs. For an existing database, apply pending SQL files in
 `migrations/` in order. Do not run the full schema twice or use
 `seed_demo.py` for a live installation.
 
-## 2. Deploy the GitHub repositories
+## 2. Deploy the GitHub repositories in a fresh workspace
 
 1. In Render, connect both GitHub repositories:
    `AllanMuzimba/hybride_fuel_system_backend` and
@@ -111,7 +119,7 @@ remains the external wake-up check.
 
 ## Render CLI (optional)
 
-The GitHub Blueprint handles builds and deploys; no CLI is needed on Render.
-If you install the official Render CLI and log in, it can validate
-`render.yaml` and inspect services. Keep API keys and database credentials out
-of the repositories.
+The current services were created with the official Render CLI and connected
+to their GitHub repositories. The CLI can also validate `render.yaml` and
+inspect services. Keep API keys and database credentials out of the
+repositories.

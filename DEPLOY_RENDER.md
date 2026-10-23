@@ -130,28 +130,25 @@ GitHub Actions settings and must never be committed to this repository.
 The workflow in `.github/workflows/render-keepalive.yml` queries Layerbase
 directly every ten minutes. It checks the Render API once daily at 05:07 UTC
 and on manual dispatch. The Layerbase query does not wake Render. A separate
-external check can be created on cron-job.org with these settings:
+external monitoring on cron-job.org uses two jobs:
 
-| Setting | Value |
-| --- | --- |
-| Title | `Hybrid Fuel API health` |
-| URL | `https://hybrid-fuel-api.onrender.com/health?check_database=true` |
-| Method | `GET` |
-| Schedule | Daily at 17:07 UTC |
-| Expected response | HTTP 200 and `{"status":"ok"}` |
+| Title | URL | Schedule |
+| --- | --- | --- |
+| `Hybrid Fuel Render keep-alive` | `https://hybrid-fuel-api.onrender.com/ping` | Every 10 minutes |
+| `Hybrid Fuel Layerbase database` | `https://hybrid-fuel-api.onrender.com/health?check_database=true` | Every 10 minutes |
 
-The cron-job.org job is enabled in the owner's account as job `8705779`.
-It is a second external check, twelve hours apart from the GitHub API check;
-it is not configured inside the Python process. The API key used to manage
+The cron-job.org jobs are enabled in the owner's account as jobs `8705779`
+and `8706922`. They are independent of GitHub Actions. The database job calls
+the database-aware health route, so HTTP 200 means Render answered and
+Layerbase completed a real query. They are not configured inside the Python
+process. The API key used to manage
 the job is stored locally at `.local-secrets/cron-job-api-key` in the frontend
 workspace, outside Flutter assets and Git. `/ping` remains available as a
 simple probe, but `/health?check_database=true` also verifies Layerbase.
 
 Any external request, including GitHub and cron-job.org, wakes a sleeping
-Render web service and keeps it running for at least its 15-minute idle
-period. Checking every ten minutes would keep it active continuously and
-consume its free instance hours. The daily checks above let it sleep between
-real user traffic. Expect a cold start on the next request after sleep.
+Render web service. The ten-minute cron-job.org schedule is intended to keep
+the API warm and continuously verify its Layerbase connection.
 GitHub scheduled jobs can be delayed or missed and may be disabled in an
 inactive public repository. The checks are not a substitute for backups or
 paid availability.

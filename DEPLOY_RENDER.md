@@ -102,6 +102,13 @@ guarantee zero cold starts. Render's free web service sleeps after 15 minutes
 without traffic and has a monthly free instance-hour allowance. The checks
 are not a substitute for backups or paid availability.
 
+While the FastAPI process runs on Render, a background task also calls its
+public `/health?check_database=true` URL every ten minutes after an initial
+60-second delay. Render provides that URL through `RENDER_EXTERNAL_URL`.
+`/ping` is available as a simple external probe. An in-process task cannot
+wake the service after Render has already stopped it, so the GitHub workflow
+remains the external wake-up check.
+
 ## Render CLI (optional)
 
 The GitHub Blueprint handles builds and deploys; no CLI is needed on Render.

@@ -49,8 +49,35 @@ python create_first_company.py
 For a new, empty database only, apply `schema.sql` with a PostgreSQL client
 using Layerbase's direct URL. The schema already contains the offline
 transaction request IDs. For an existing database, apply pending SQL files in
-`migrations/` in order. Do not run the full schema twice or use
+`migrations/` in order, including `011_accounts_billing.sql`. Do not run the full schema twice or use
 `seed_demo.py` for a live installation.
+
+The developer dashboard manages companies, company applications, all users,
+and manual company invoices. Invoice status records whether an invoice is
+unpaid, paid, or void; the app does not process payments.
+
+The API accepts username, email, or phone at sign-in. Users can edit their
+own email and phone and change their password after entering the current
+password. Only a company director can change roles within their company;
+developer and dev-support accounts can manage company roles, while only the
+developer can assign or manage platform roles.
+
+Password reset links use the Flutter web app's `?reset_token=` parameter and
+expire after 30 minutes. To enable reset email delivery, set these API service
+environment variables in Render. For Gmail, use an app password in
+`SMTP_PASSWORD` instead of the account's regular sign-in password.
+
+| Variable | Value |
+| --- | --- |
+| `SMTP_HOST` | SMTP server hostname |
+| `SMTP_PORT` | `587` for STARTTLS, or `465` for implicit TLS |
+| `SMTP_USERNAME` | SMTP account username |
+| `SMTP_PASSWORD` | SMTP app password or provider credential |
+| `SMTP_FROM_EMAIL` | Sender address (defaults to `SMTP_USERNAME`) |
+| `PASSWORD_RESET_URL` | `https://hybrid-fuel-web.onrender.com/` |
+
+The forgot-password screen is available before sign-in. Until SMTP is
+configured, the API reports that password reset email is unavailable.
 
 ## 2. Deploy the GitHub repositories in a fresh workspace
 

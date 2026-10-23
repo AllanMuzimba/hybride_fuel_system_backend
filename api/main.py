@@ -24,6 +24,7 @@ from .routers import (
     shifts_router,
     expenses_router,
     reports_router,
+    billing_router,
 )
 
 app = FastAPI(
@@ -54,6 +55,7 @@ app.include_router(sales_router.router)
 app.include_router(shifts_router.router)
 app.include_router(expenses_router.router)
 app.include_router(reports_router.router)
+app.include_router(billing_router.router)
 
 
 @app.get("/health", tags=["health"])

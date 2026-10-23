@@ -43,6 +43,13 @@ def create_company(
     db.commit()
 
     company = db.query(models.Company).get(row["id"])
+    db.add_all([
+        models.CompanyBranch(company_id=company.id, branch_name=f"Branch {number}",
+                             address=payload.address, phone=payload.phone)
+        for number in range(1, payload.branch_count + 1)
+    ])
+    db.commit()
+    db.refresh(company)
     return company
 
 
@@ -124,6 +131,23 @@ def list_companies(
     if active_only:
         q = q.filter(models.Company.is_active.is_(True))
     return q.order_by(models.Company.name).all()
+
+
+@router.patch("/companies/{company_id}", response_model=schemas.CompanyOut)
+def update_company(
+    company_id: int,
+    payload: schemas.CompanyUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.require_role("developer")),
+):
+    company = db.query(models.Company).filter(models.Company.id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(company, field, value.strip() if isinstance(value, str) else value)
+    db.commit()
+    db.refresh(company)
+    return company
 
 
 @router.get("/companies/by-slug/{slug}", response_model=schemas.CompanyOut)

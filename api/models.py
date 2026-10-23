@@ -79,6 +79,32 @@ class User(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class PasswordResetToken(Base):
+    __tablename__ = "password_reset_tokens"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_hash = Column(String(64), nullable=False, unique=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    used_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class CompanyInvoice(Base):
+    __tablename__ = "company_invoices"
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False, index=True)
+    invoice_number = Column(String(50), nullable=False, unique=True)
+    description = Column(String(255), nullable=False)
+    amount = Column(Numeric(14, 2), nullable=False)
+    currency = Column(String(3), nullable=False, default="USD")
+    status = Column(String(20), nullable=False, default="unpaid")
+    issued_at = Column(Date, nullable=False)
+    due_at = Column(Date, nullable=False)
+    notes = Column(Text)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class Supplier(Base):
     __tablename__ = "suppliers"
     id = Column(Integer, primary_key=True)

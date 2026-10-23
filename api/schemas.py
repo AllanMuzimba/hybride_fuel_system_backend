@@ -18,14 +18,32 @@ class Token(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    username: str
+    username: str  # accepts username, email address or phone
     password: str
+
+
+class PasswordResetRequest(BaseModel):
+    email: str = Field(min_length=5, max_length=150)
+
+
+class PasswordResetComplete(BaseModel):
+    token: str = Field(min_length=20, max_length=200)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+class ProfileUpdate(BaseModel):
+    full_name: Optional[str] = Field(default=None, min_length=2, max_length=150)
+    email: Optional[str] = Field(default=None, max_length=150)
+    phone: Optional[str] = Field(default=None, max_length=30)
+    current_password: Optional[str] = None
+    new_password: Optional[str] = Field(default=None, min_length=8, max_length=128)
 
 
 # ------------------------------------------------------------ companies ----
 class CompanyCreate(BaseModel):
-    name: str
-    slug: str
+    name: str = Field(min_length=2, max_length=150)
+    slug: str = Field(min_length=2, max_length=100, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    branch_count: int = Field(default=1, ge=1, le=500)
     address: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
@@ -95,17 +113,30 @@ class BranchOut(BaseModel):
 
 # ---------------------------------------------------------------- users ----
 UserRole = Literal["attendant", "supervisor", "manager", "director", "developer",
-                   "dev_support"]
+                   "dev_support", "secretary"]
 
 
 class UserCreate(BaseModel):
-    username: str
-    password: str
-    full_name: str
+    username: str = Field(min_length=2, max_length=50)
+    password: str = Field(min_length=8, max_length=128)
+    full_name: str = Field(min_length=2, max_length=150)
     role: UserRole = "attendant"
     branch_id: Optional[int] = None  # None = company-wide access
     phone: Optional[str] = None
     email: Optional[str] = None
+    company_id: Optional[int] = None  # platform developer only
+
+
+class UserUpdate(BaseModel):
+    username: Optional[str] = Field(default=None, min_length=2, max_length=50)
+    full_name: Optional[str] = Field(default=None, min_length=2, max_length=150)
+    role: Optional[UserRole] = None
+    branch_id: Optional[int] = None
+    company_id: Optional[int] = None
+    phone: Optional[str] = Field(default=None, max_length=30)
+    email: Optional[str] = Field(default=None, max_length=150)
+    is_active: Optional[bool] = None
+    new_password: Optional[str] = Field(default=None, min_length=8, max_length=128)
 
 
 class UserOut(BaseModel):
@@ -120,6 +151,43 @@ class UserOut(BaseModel):
     email: Optional[str] = None
     is_active: bool
     created_at: datetime
+
+
+class CompanyInvoiceCreate(BaseModel):
+    company_id: int
+    description: str = Field(min_length=2, max_length=255)
+    amount: float = Field(gt=0)
+    currency: str = Field(default="USD", min_length=3, max_length=3)
+    issued_at: date
+    due_at: date
+    notes: Optional[str] = None
+
+
+class CompanyInvoiceStatusUpdate(BaseModel):
+    status: Literal["unpaid", "paid", "void"]
+
+
+class CompanyInvoiceOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    company_id: int
+    invoice_number: str
+    description: str
+    amount: float
+    currency: str
+    status: str
+    issued_at: date
+    due_at: date
+    notes: Optional[str] = None
+    created_at: datetime
+
+
+class CompanyUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=2, max_length=150)
+    address: Optional[str] = None
+    phone: Optional[str] = Field(default=None, max_length=30)
+    email: Optional[str] = Field(default=None, max_length=150)
+    is_active: Optional[bool] = None
 
 
 # ------------------------------------------------------------ suppliers ----

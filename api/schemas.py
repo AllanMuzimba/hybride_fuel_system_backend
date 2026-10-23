@@ -540,6 +540,55 @@ class SaleOut(BaseModel):
     notes: Optional[str] = None
 
 
+# --------------------------------------------------------------- kiosk ----
+class ProductCategoryCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+
+
+class KioskProductCreate(BaseModel):
+    branch_id: int
+    category_id: int
+    name: str = Field(min_length=1, max_length=150)
+    cost_price: float = Field(ge=0)
+    sell_price: float = Field(ge=0)
+    stock_quantity: float = Field(default=0, ge=0)
+
+
+class KioskProductUpdate(BaseModel):
+    category_id: Optional[int] = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=150)
+    cost_price: Optional[float] = Field(default=None, ge=0)
+    sell_price: Optional[float] = Field(default=None, ge=0)
+    stock_quantity: Optional[float] = Field(default=None, ge=0)
+    is_active: Optional[bool] = None
+
+
+class KioskCartItem(BaseModel):
+    product_id: Optional[int] = None
+    fuel_type_id: Optional[int] = None
+    quantity: float = Field(gt=0)
+
+    @model_validator(mode="after")
+    def exactly_one_item_type(self):
+        if (self.product_id is None) == (self.fuel_type_id is None):
+            raise ValueError("Choose either a product or fuel type")
+        return self
+
+
+class KioskSaleCreate(BaseModel):
+    branch_id: int
+    payment_method: PaymentMethod
+    cash_received: Optional[float] = Field(default=None, ge=0)
+    items: List[KioskCartItem] = Field(min_length=1)
+
+
+class CompanySalesSettingsUpdate(BaseModel):
+    company_id: int
+    kiosk_enabled: bool = True
+    kiosk_sell_roles: List[UserRole]
+    kiosk_view_roles: List[UserRole]
+
+
 # ---------------------------------------------------------------- shifts ----
 class ShiftTemplateCreate(BaseModel):
     name: str = Field(min_length=1, max_length=60)

@@ -6,7 +6,7 @@ trigger-maintained fields are marked read-only from the app's side.
 """
 from sqlalchemy import (
     Column, Integer, BigInteger, String, Text, Boolean, Numeric, Date, DateTime,
-    Time, ForeignKey, Enum, UniqueConstraint, func, Computed
+    Time, ForeignKey, Enum, UniqueConstraint, func, Computed, JSON
 )
 from .database import Base
 
@@ -301,6 +301,69 @@ class Sale(Base):
     sale_date = Column(DateTime(timezone=True), server_default=func.now())
     entry_source = Column(String(20), nullable=False, default="realtime")  # realtime | shift_close
     notes = Column(Text)
+
+
+class ProductCategory(Base):
+    __tablename__ = "product_categories"
+    __table_args__ = (UniqueConstraint("company_id", "name"),)
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)
+    name = Column(String(100), nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class KioskProduct(Base):
+    __tablename__ = "kiosk_products"
+    __table_args__ = (UniqueConstraint("branch_id", "name"),)
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)
+    branch_id = Column(Integer, ForeignKey("company_branches.id"), nullable=False)
+    category_id = Column(Integer, ForeignKey("product_categories.id"), nullable=False)
+    name = Column(String(150), nullable=False)
+    cost_price = Column(Numeric(12, 2), nullable=False, default=0)
+    sell_price = Column(Numeric(12, 2), nullable=False, default=0)
+    stock_quantity = Column(Numeric(14, 3), nullable=False, default=0)
+    is_active = Column(Boolean, nullable=False, default=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class KioskSale(Base):
+    __tablename__ = "kiosk_sales"
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)
+    branch_id = Column(Integer, ForeignKey("company_branches.id"), nullable=False)
+    shift_id = Column(Integer, ForeignKey("shifts.id"))
+    payment_method = Column(Enum(*PAYMENT_METHODS, name="payment_method", create_type=False), nullable=False)
+    total_amount = Column(Numeric(14, 2), nullable=False)
+    cash_received = Column(Numeric(14, 2))
+    change_given = Column(Numeric(14, 2))
+    served_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    sale_date = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class KioskSaleItem(Base):
+    __tablename__ = "kiosk_sale_items"
+    id = Column(Integer, primary_key=True)
+    sale_id = Column(Integer, ForeignKey("kiosk_sales.id", ondelete="CASCADE"), nullable=False)
+    product_id = Column(Integer, ForeignKey("kiosk_products.id"))
+    fuel_sale_id = Column(Integer, ForeignKey("sales.id"))
+    item_name = Column(String(150), nullable=False)
+    item_type = Column(String(10), nullable=False)
+    quantity = Column(Numeric(14, 3), nullable=False)
+    unit_cost = Column(Numeric(12, 2), nullable=False)
+    unit_price = Column(Numeric(12, 2), nullable=False)
+    total_amount = Column(Numeric(14, 2), nullable=False)
+
+
+class CompanySalesSettings(Base):
+    __tablename__ = "company_sales_settings"
+    company_id = Column(Integer, ForeignKey("companies.id"), primary_key=True)
+    kiosk_enabled = Column(Boolean, nullable=False, default=True)
+    kiosk_sell_roles = Column(JSON, nullable=False, default=lambda: ["manager", "supervisor"])
+    kiosk_view_roles = Column(JSON, nullable=False, default=lambda: ["manager", "supervisor"])
+    updated_by = Column(Integer, ForeignKey("users.id"))
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class CustomerTransaction(Base):

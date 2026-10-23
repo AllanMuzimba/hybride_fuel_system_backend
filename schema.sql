@@ -1261,6 +1261,61 @@ CREATE OR REPLACE FUNCTION get_fuel_report_range(
     ORDER BY dfr.report_date, dfr.branch_id, dfr.fuel_type_id;
 $$ LANGUAGE sql STABLE;
 
+-- Kiosk products, mixed POS orders and company module permissions.
+CREATE TABLE product_categories (
+    id SERIAL PRIMARY KEY,
+    company_id INT NOT NULL REFERENCES companies(id),
+    name VARCHAR(100) NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(company_id, name)
+);
+CREATE TABLE kiosk_products (
+    id SERIAL PRIMARY KEY,
+    company_id INT NOT NULL REFERENCES companies(id),
+    branch_id INT NOT NULL REFERENCES company_branches(id),
+    category_id INT NOT NULL REFERENCES product_categories(id),
+    name VARCHAR(150) NOT NULL,
+    cost_price NUMERIC(12,2) NOT NULL CHECK(cost_price >= 0),
+    sell_price NUMERIC(12,2) NOT NULL CHECK(sell_price >= 0),
+    stock_quantity NUMERIC(14,3) NOT NULL DEFAULT 0 CHECK(stock_quantity >= 0),
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(branch_id, name)
+);
+CREATE TABLE kiosk_sales (
+    id SERIAL PRIMARY KEY,
+    company_id INT NOT NULL REFERENCES companies(id),
+    branch_id INT NOT NULL REFERENCES company_branches(id),
+    shift_id INT REFERENCES shifts(id),
+    payment_method payment_method NOT NULL,
+    total_amount NUMERIC(14,2) NOT NULL,
+    cash_received NUMERIC(14,2),
+    change_given NUMERIC(14,2),
+    served_by INT NOT NULL REFERENCES users(id),
+    sale_date TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE kiosk_sale_items (
+    id SERIAL PRIMARY KEY,
+    sale_id INT NOT NULL REFERENCES kiosk_sales(id) ON DELETE CASCADE,
+    product_id INT REFERENCES kiosk_products(id),
+    fuel_sale_id INT REFERENCES sales(id),
+    item_name VARCHAR(150) NOT NULL,
+    item_type VARCHAR(10) NOT NULL CHECK(item_type IN ('product','fuel')),
+    quantity NUMERIC(14,3) NOT NULL CHECK(quantity > 0),
+    unit_cost NUMERIC(12,2) NOT NULL,
+    unit_price NUMERIC(12,2) NOT NULL,
+    total_amount NUMERIC(14,2) NOT NULL
+);
+CREATE TABLE company_sales_settings (
+    company_id INT PRIMARY KEY REFERENCES companies(id),
+    kiosk_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    kiosk_sell_roles JSONB NOT NULL DEFAULT '["manager","supervisor"]'::jsonb,
+    kiosk_view_roles JSONB NOT NULL DEFAULT '["manager","supervisor"]'::jsonb,
+    updated_by INT REFERENCES users(id),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Financial report (opening/income/expenses/closing), per branch per day
 CREATE OR REPLACE FUNCTION get_financial_report_range(
     p_start DATE, p_end DATE, p_company_id INT DEFAULT NULL, p_branch_id INT DEFAULT NULL

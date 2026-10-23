@@ -145,10 +145,25 @@ def list_templates(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user),
 ):
-    return (db.query(models.ShiftTemplate)
-            .filter(models.ShiftTemplate.company_id == current_user.company_id,
-                    models.ShiftTemplate.is_active.is_(True))
-            .order_by(models.ShiftTemplate.start_time, models.ShiftTemplate.name).all())
+    templates = (db.query(models.ShiftTemplate)
+                 .filter(models.ShiftTemplate.company_id == current_user.company_id,
+                         models.ShiftTemplate.is_active.is_(True))
+                 .order_by(models.ShiftTemplate.start_time, models.ShiftTemplate.name).all())
+    return [
+        schemas.ShiftTemplateOut(
+            id=row.id,
+            company_id=row.company_id,
+            name=row.name,
+            start_time=row.start_time,
+            end_time=row.end_time,
+            is_active=row.is_active,
+            usage_count=db.query(func.count(models.Shift.id)).filter(
+                models.Shift.company_id == current_user.company_id,
+                models.Shift.shift_label == row.name,
+            ).scalar() or 0,
+        )
+        for row in templates
+    ]
 
 
 @router.post("/templates", response_model=schemas.ShiftTemplateOut, status_code=201)
@@ -218,6 +233,15 @@ def delete_template(
     ).first()
     if not template:
         raise HTTPException(status_code=404, detail="Shift template not found")
+    used = db.query(models.Shift.id).filter(
+        models.Shift.company_id == current_user.company_id,
+        models.Shift.shift_label == template.name,
+    ).first()
+    if used:
+        raise HTTPException(
+            status_code=409,
+            detail="This shift has activity and cannot be removed because it is required by finance reports",
+        )
     template.is_active = False
     db.commit()
 

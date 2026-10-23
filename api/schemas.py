@@ -601,6 +601,7 @@ class ShiftTemplateOut(ShiftTemplateCreate):
     id: int
     company_id: int
     is_active: bool
+    usage_count: int = 0
 
 
 EntryMode = Literal["realtime", "end_of_shift"]

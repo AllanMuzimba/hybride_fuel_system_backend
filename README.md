@@ -67,9 +67,9 @@ automatic behaviour, all handled by triggers (no app-side bookkeeping needed):
   over their `monthly_limit`.
 - **Supplier payments** → update the receipt's `amount_paid` and flip
   `payment_status` to `partial`/`paid`.
-- **When an invoice flips to `paid`** → a matching row is auto-inserted into
+- **Each supplier payment** → a matching expense is auto-inserted into
   `expenses` (category `Fuel Purchases`, `is_system_generated = true`,
-  attributed to that receipt's company + branch) — you never enter it twice.
+  attributed to that receipt's company + branch and payment date).
 - **Customer payments** → reduce their balance, stamp `balance_after`, and
   (if you tell it which branch's till collected the cash) count as that
   branch's income for the day.
@@ -120,23 +120,29 @@ uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
 
 Browse to `http://localhost:8000/docs` for interactive Swagger docs.
 
-Onboarding a **new** company later doesn't need the script — it's just:
-1. `POST /companies` (public — name, slug, address/lat/lng, phone, email, url)
-2. `POST /companies/{company_id}/bootstrap-admin` (public, but only works
-   once — while that company has zero users) to create its first
-   `developer` login
-3. From there, that user logs in via `POST /auth/login` and uses the normal
-   (authenticated) endpoints to add branches, staff, suppliers, fuel types, etc.
+For an existing database, apply `migrations/009_offline_sales.sql` before
+connecting updated Flutter clients. Offline sale uploads include their original
+shift, UTC sale time, and `client_request_id`. The unique request ID makes a
+retry return the existing sale after a lost response. A sale can be uploaded
+against a closed shift only if its recorded time falls within that shift and
+the seller's attendance. Stock and credit rules still apply when it reaches
+the server.
+
+New companies submit `POST /companies/registration-requests`. A developer
+reviews the request at `GET /companies/registration-requests` and approves it
+with `POST /companies/registration-requests/{id}/approve`. Approval creates
+the tenant and requested branches. A developer or dev_support user then calls
+`POST /companies/{company_id}/bootstrap-admin` once to create the first
+manager login.
 
 ## 4. Roles
 
-`attendant` → `supervisor` → `manager` → `director` → `developer` (each tier
-can do what the ones below it can, plus more — enforced per-endpoint via
-`require_role(...)` in the routers). Examples:
-- Any logged-in user can record a sale (`served_by` = them, whoever's on shift).
-- `supervisor`+ can register suppliers/customers and receive fuel.
-- `manager`+ can edit fuel prices, pay supplier invoices, and create expense categories.
-- `director`+ can create/deactivate application users and branches.
+`attendant` records sales and customer top-ups; `supervisor` handles shifts,
+receiving, tank dips, sales and top-ups; `director` reviews reports, receives
+fuel and views stock and customers; `manager` manages the full company
+workspace. `dev_support` submits company applications and supports tenant
+setup, while `developer` approves applications and manages the platform.
+The API enforces these permissions through `require_role(...)`.
 
 A user with `branch_id` set can only touch that one branch's data
 (`auth.verify_branch_access` enforces this on every branch-scoped write);

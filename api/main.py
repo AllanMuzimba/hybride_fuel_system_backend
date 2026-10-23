@@ -16,6 +16,7 @@ from .routers import (
     receipts_router,
     customers_router,
     sales_router,
+    shifts_router,
     expenses_router,
     reports_router,
 )
@@ -44,6 +45,7 @@ app.include_router(fuel_types_router.router)
 app.include_router(receipts_router.router)
 app.include_router(customers_router.router)
 app.include_router(sales_router.router)
+app.include_router(shifts_router.router)
 app.include_router(expenses_router.router)
 app.include_router(reports_router.router)
 

@@ -10,7 +10,7 @@
 --   users, suppliers, fuel_types, customers, expense_categories
 --                       -- scoped to a company (shared across its branches)
 --   fuel_stock, fuel_receipts, sales, customer_transactions, expenses,
---   daily_fuel_reports, daily_financial_summary
+--   daily_fuel_reports, daily_financial_summary, shifts, shift_attendance
 --                       -- scoped to a branch (each branch runs its own
 --                          stock/till; company-wide totals are obtained by
 --                          joining through company_branches)
@@ -21,7 +21,7 @@ BEGIN;
 -- ---------------------------------------------------------------------
 -- 1. ENUM TYPES
 -- ---------------------------------------------------------------------
-CREATE TYPE user_role       AS ENUM ('attendant', 'supervisor', 'manager', 'director', 'developer');
+CREATE TYPE user_role       AS ENUM ('attendant', 'supervisor', 'manager', 'director', 'developer', 'dev_support', 'secretary');
 CREATE TYPE payment_status  AS ENUM ('unpaid', 'partial', 'paid');
 CREATE TYPE payment_method  AS ENUM ('cash', 'card', 'mobile_money', 'account');
 CREATE TYPE customer_txn_type AS ENUM ('fill_up', 'payment', 'adjustment');
@@ -82,6 +82,25 @@ CREATE TABLE users (
 CREATE INDEX idx_users_company ON users(company_id);
 CREATE INDEX idx_users_branch  ON users(branch_id);
 
+CREATE TABLE company_registration_requests (
+    id SERIAL PRIMARY KEY,
+    company_name VARCHAR(150) NOT NULL,
+    address TEXT NOT NULL,
+    branch_count INTEGER NOT NULL CHECK (branch_count BETWEEN 1 AND 500),
+    phone VARCHAR(30) NOT NULL,
+    email VARCHAR(150) NOT NULL,
+    message TEXT NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'approved', 'rejected')),
+    submitted_by INTEGER REFERENCES users(id),
+    reviewed_by INTEGER REFERENCES users(id),
+    company_id INTEGER REFERENCES companies(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    reviewed_at TIMESTAMPTZ
+);
+CREATE INDEX idx_company_registration_requests_status_created
+    ON company_registration_requests(status, created_at DESC);
+
 -- ---------------------------------------------------------------------
 -- 5. SUPPLIERS  (shared across all of a company's branches)
 -- ---------------------------------------------------------------------
@@ -93,6 +112,7 @@ CREATE TABLE suppliers (
     phone           VARCHAR(30),
     email           VARCHAR(150),
     address         TEXT,
+    vat_number      VARCHAR(50),           -- VAT / tax number, optional
     is_active       BOOLEAN      NOT NULL DEFAULT TRUE,
     created_by      INT REFERENCES users(id),
     created_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
@@ -137,9 +157,31 @@ CREATE TABLE fuel_stock (
     fuel_type_id    INT NOT NULL REFERENCES fuel_types(id),
     current_volume  NUMERIC(14,3) NOT NULL DEFAULT 0,
     capacity        NUMERIC(14,3),   -- tank/storage capacity for this branch+fuel; NULL = not tracked
+    tank_height_cm  NUMERIC(8,2) NOT NULL DEFAULT 100,
+                                       -- calibrated dip-stick height (cm) of this tank; used to
+                                       -- turn a stick reading into litres when no dip chart exists
     updated_at      TIMESTAMPTZ   NOT NULL DEFAULT now(),
     PRIMARY KEY (branch_id, fuel_type_id)
 );
+
+-- ---------------------------------------------------------------------
+-- 6b. TANK DIP CALIBRATION — per branch + fuel type, a dip chart of
+--     stick reading (cm from the bottom) -> litres. fn_dip_to_volume()
+--     interpolates between these points; a branch that has never entered
+--     a chart is handled by a straight line from tank_height_cm (empty) to
+--     capacity (full), so dip readings work out of the box.
+-- ---------------------------------------------------------------------
+CREATE TABLE tank_dip_calibrations (
+    id              SERIAL PRIMARY KEY,
+    branch_id       INT NOT NULL REFERENCES company_branches(id) ON DELETE CASCADE,
+    fuel_type_id    INT NOT NULL REFERENCES fuel_types(id) ON DELETE CASCADE,
+    dip_cm          NUMERIC(8,2)  NOT NULL CHECK (dip_cm >= 0),
+    volume_litres   NUMERIC(14,3) NOT NULL CHECK (volume_litres >= 0),
+    created_by      INT REFERENCES users(id),
+    created_at      TIMESTAMPTZ   NOT NULL DEFAULT now(),
+    UNIQUE (branch_id, fuel_type_id, dip_cm)
+);
+CREATE INDEX idx_dip_cal_branch ON tank_dip_calibrations(branch_id, fuel_type_id);
 
 -- ---------------------------------------------------------------------
 -- 7. FUEL RECEIPTS  ("receive" table — stock coming in from suppliers,
@@ -158,6 +200,8 @@ CREATE TABLE fuel_receipts (
     amount_paid         NUMERIC(14,2) NOT NULL DEFAULT 0,
     received_date       DATE NOT NULL DEFAULT CURRENT_DATE,
     received_by         INT NOT NULL REFERENCES users(id),
+    dip_before_cm       NUMERIC(8,2),      -- dip-stick reading before the delivery (cm)
+    dip_after_cm        NUMERIC(8,2),      -- dip-stick reading after the delivery (cm)
     notes               TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -174,6 +218,9 @@ CREATE TABLE supplier_payments (
     payment_date    DATE NOT NULL DEFAULT CURRENT_DATE,
     paid_by         INT NOT NULL REFERENCES users(id),
     notes           TEXT,
+    reference       VARCHAR(100),  -- bank transfer / EFT / cheque reference
+    payment_channel VARCHAR(20) NOT NULL DEFAULT 'unknown'
+                    CHECK (payment_channel IN ('cash', 'card', 'mobile_money', 'bank', 'unknown')),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_supplier_payments_receipt ON supplier_payments(receipt_id);
@@ -199,13 +246,69 @@ CREATE TABLE customers (
 CREATE INDEX idx_customers_company ON customers(company_id);
 
 -- ---------------------------------------------------------------------
+-- 8b. SHIFTS + ATTENDANCE  (a branch runs its forecourt in shifts: the
+--     shift carries the date/period, everyone who signs in is recorded,
+--     and every sale is booked against it. One open shift per branch.)
+-- ---------------------------------------------------------------------
+CREATE TABLE shift_templates (
+    id SERIAL PRIMARY KEY,
+    company_id INT NOT NULL REFERENCES companies(id),
+    name VARCHAR(60) NOT NULL,
+    start_time TIME NOT NULL,
+    end_time TIME NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    CHECK (start_time <> end_time),
+    UNIQUE (company_id, name)
+);
+
+CREATE TABLE shifts (
+    id              SERIAL PRIMARY KEY,
+    company_id      INT NOT NULL REFERENCES companies(id),
+    branch_id       INT NOT NULL REFERENCES company_branches(id),
+    shift_date      DATE NOT NULL DEFAULT CURRENT_DATE,
+    shift_label     VARCHAR(60) NOT NULL DEFAULT 'Custom',  -- 'Morning', 'Night', ...
+    start_time      TIME NOT NULL,
+    end_time        TIME NOT NULL,
+    -- realtime     -> attendants record each sale as it happens
+    -- end_of_shift -> a manager/supervisor enters the litres sold afterwards
+    entry_mode      VARCHAR(20) NOT NULL DEFAULT 'realtime'
+                    CHECK (entry_mode IN ('realtime', 'end_of_shift')),
+    status          VARCHAR(10) NOT NULL DEFAULT 'open'
+                    CHECK (status IN ('open', 'closed')),
+    opened_by       INT NOT NULL REFERENCES users(id),
+    opened_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    closed_by       INT REFERENCES users(id),
+    closed_at       TIMESTAMPTZ,
+    notes           TEXT,
+    CONSTRAINT chk_shift_period CHECK (end_time <> start_time)
+);
+-- One open shift per branch at a time.
+CREATE UNIQUE INDEX uq_shifts_open_branch ON shifts(branch_id) WHERE status = 'open';
+CREATE INDEX idx_shifts_company ON shifts(company_id);
+CREATE INDEX idx_shifts_branch  ON shifts(branch_id, shift_date DESC);
+
+-- Who signed in for the shift: attendance details kept per person so the
+-- shift page can show exactly who was on the forecourt and when.
+CREATE TABLE shift_attendance (
+    id          SERIAL PRIMARY KEY,
+    shift_id    INT NOT NULL REFERENCES shifts(id) ON DELETE CASCADE,
+    user_id     INT NOT NULL REFERENCES users(id),
+    joined_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    left_at     TIMESTAMPTZ,
+    UNIQUE (shift_id, user_id)
+);
+CREATE INDEX idx_shift_att_user ON shift_attendance(user_id);
+
+-- ---------------------------------------------------------------------
 -- 9. SALES  ("selling" table — also drives stock, always at one branch)
 -- ---------------------------------------------------------------------
 CREATE TABLE sales (
     id              SERIAL PRIMARY KEY,
+    client_request_id VARCHAR(64) UNIQUE,
     branch_id       INT NOT NULL REFERENCES company_branches(id),
     fuel_type_id    INT NOT NULL REFERENCES fuel_types(id),
     customer_id     INT REFERENCES customers(id),        -- NULL = walk-in cash sale
+    shift_id        INT REFERENCES shifts(id),           -- shift the sale was booked to
     volume          NUMERIC(14,3) NOT NULL CHECK (volume > 0),
     cost_price      NUMERIC(12,2) NOT NULL,               -- snapshot of fuel_types.current_cost
     sell_price      NUMERIC(12,2) NOT NULL,               -- snapshot of fuel_types.sell_price
@@ -213,6 +316,9 @@ CREATE TABLE sales (
     payment_method  payment_method NOT NULL,
     served_by       INT NOT NULL REFERENCES users(id),
     sale_date       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- 'realtime' = recorded live | 'shift_close' = litres entered at end of shift
+    entry_source    VARCHAR(20) NOT NULL DEFAULT 'realtime'
+                    CHECK (entry_source IN ('realtime', 'shift_close')),
     notes           TEXT,
     CONSTRAINT chk_account_needs_customer
         CHECK (payment_method <> 'account' OR customer_id IS NOT NULL)
@@ -221,6 +327,7 @@ CREATE INDEX idx_sales_branch    ON sales(branch_id);
 CREATE INDEX idx_sales_date      ON sales(sale_date);
 CREATE INDEX idx_sales_customer  ON sales(customer_id);
 CREATE INDEX idx_sales_fuel_type ON sales(fuel_type_id);
+CREATE INDEX idx_sales_shift     ON sales(shift_id);
 
 -- ---------------------------------------------------------------------
 -- 10. CUSTOMER TRANSACTIONS  (fill_up / payment / adjustment history)
@@ -238,7 +345,9 @@ CREATE TABLE customer_transactions (
     balance_after       NUMERIC(14,2) NOT NULL,
     recorded_by         INT NOT NULL REFERENCES users(id),
     transaction_date    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    notes               TEXT
+    notes               TEXT,
+    payment_channel     VARCHAR(20) NOT NULL DEFAULT 'unknown'
+                        CHECK (payment_channel IN ('cash', 'card', 'mobile_money', 'bank', 'unknown'))
 );
 CREATE INDEX idx_cust_txn_branch   ON customer_transactions(branch_id);
 CREATE INDEX idx_cust_txn_date     ON customer_transactions(transaction_date);
@@ -265,17 +374,20 @@ CREATE TABLE expenses (
     amount              NUMERIC(14,2) NOT NULL CHECK (amount > 0),
     reference           VARCHAR(100),                          -- e.g. invoice/receipt number
     notes               TEXT,
-    receipt_id          INT REFERENCES fuel_receipts(id),      -- set automatically for invoice-paid expenses
+    receipt_id          INT REFERENCES fuel_receipts(id),      -- supplier invoice for payment expenses
+    supplier_payment_id INT UNIQUE REFERENCES supplier_payments(id),
     expense_date        DATE NOT NULL DEFAULT CURRENT_DATE,
     recorded_by         INT REFERENCES users(id),               -- NULL only for system-generated rows
     is_system_generated BOOLEAN NOT NULL DEFAULT FALSE,
+    payment_channel VARCHAR(20) NOT NULL DEFAULT 'unknown'
+                    CHECK (payment_channel IN ('cash', 'card', 'mobile_money', 'bank', 'unknown')),
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_expenses_company  ON expenses(company_id);
 CREATE INDEX idx_expenses_branch   ON expenses(branch_id);
 CREATE INDEX idx_expenses_date     ON expenses(expense_date);
 CREATE INDEX idx_expenses_category ON expenses(category_id);
-CREATE UNIQUE INDEX uq_expenses_receipt ON expenses(receipt_id) WHERE receipt_id IS NOT NULL;
+CREATE INDEX idx_expenses_receipt ON expenses(receipt_id) WHERE receipt_id IS NOT NULL;
 
 -- ---------------------------------------------------------------------
 -- 12. DAILY FUEL REPORTS  (volume + monetary, one row per day per branch
@@ -885,10 +997,16 @@ RETURNS TRIGGER AS $$
 DECLARE
     v_branch_id  INT;
     v_company_id INT;
+    v_category_id INT;
+    v_supplier_name VARCHAR(150);
+    v_reference VARCHAR(100);
 BEGIN
     UPDATE fuel_receipts
     SET amount_paid = amount_paid + NEW.amount
-    WHERE id = NEW.receipt_id;
+    WHERE id = NEW.receipt_id AND amount_paid + NEW.amount <= total_cost;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Payment exceeds the supplier invoice balance';
+    END IF;
 
     UPDATE fuel_receipts
     SET payment_status = CASE
@@ -900,6 +1018,24 @@ BEGIN
 
     SELECT branch_id INTO v_branch_id FROM fuel_receipts WHERE id = NEW.receipt_id;
     SELECT company_id INTO v_company_id FROM company_branches WHERE id = v_branch_id;
+    SELECT id INTO v_category_id FROM expense_categories
+      WHERE company_id = v_company_id AND name = 'Fuel Purchases';
+    IF v_category_id IS NULL THEN
+        INSERT INTO expense_categories(company_id, name)
+        VALUES (v_company_id, 'Fuel Purchases') RETURNING id INTO v_category_id;
+    END IF;
+    SELECT s.name, fr.invoice_reference INTO v_supplier_name, v_reference
+      FROM fuel_receipts fr JOIN suppliers s ON s.id = fr.supplier_id
+      WHERE fr.id = NEW.receipt_id;
+    INSERT INTO expenses(company_id, branch_id, name, category_id, amount,
+                         reference, notes, receipt_id, supplier_payment_id,
+                         expense_date, recorded_by, is_system_generated, payment_channel)
+    VALUES (v_company_id, v_branch_id,
+            'Fuel purchase - ' || COALESCE(v_supplier_name, 'Supplier'),
+            v_category_id, NEW.amount, COALESCE(NEW.reference, v_reference),
+            'Supplier invoice #' || NEW.receipt_id,
+            NEW.receipt_id, NEW.id, NEW.payment_date, NEW.paid_by, TRUE,
+            NEW.payment_channel);
     PERFORM fn_log_activity(
         v_company_id, v_branch_id, NEW.paid_by, 'supplier_payment',
         'Payment made against supplier invoice', NEW.amount, 'supplier_payments', NEW.id
@@ -912,56 +1048,6 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER trg_after_supplier_payment_insert
 AFTER INSERT ON supplier_payments
 FOR EACH ROW EXECUTE FUNCTION trg_fn_supplier_payment_after_insert();
-
--- ---------------------------------------------------------------------
--- Trigger: when a fuel_receipts row FLIPS to 'paid' -> automatically log
--- it as an expense (category 'Fuel Purchases', on the receiving branch),
--- so it flows into the financial reports without anyone typing it twice.
--- Guarded so it only fires once per receipt even if touched again later.
--- ---------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION trg_fn_receipt_paid_expense()
-RETURNS TRIGGER AS $$
-DECLARE
-    v_category_id   INT;
-    v_supplier_name VARCHAR(150);
-    v_last_payer    INT;
-    v_company_id    INT;
-BEGIN
-    IF NEW.payment_status = 'paid' AND (OLD.payment_status IS DISTINCT FROM 'paid') THEN
-        IF NOT EXISTS (SELECT 1 FROM expenses WHERE receipt_id = NEW.id) THEN
-            SELECT company_id INTO v_company_id FROM company_branches WHERE id = NEW.branch_id;
-            SELECT id INTO v_category_id FROM expense_categories
-                WHERE company_id = v_company_id AND name = 'Fuel Purchases';
-            SELECT name INTO v_supplier_name FROM suppliers WHERE id = NEW.supplier_id;
-            SELECT paid_by INTO v_last_payer
-              FROM supplier_payments WHERE receipt_id = NEW.id
-              ORDER BY created_at DESC LIMIT 1;
-
-            INSERT INTO expenses (
-                company_id, branch_id, name, category_id, amount, reference, notes,
-                receipt_id, expense_date, recorded_by, is_system_generated
-            ) VALUES (
-                v_company_id,
-                NEW.branch_id,
-                'Fuel purchase - ' || COALESCE(v_supplier_name, 'Supplier'),
-                v_category_id,
-                NEW.total_cost,
-                NEW.invoice_reference,
-                'Auto-generated on full payment of supplier invoice #' || NEW.id,
-                NEW.id,
-                CURRENT_DATE,
-                v_last_payer,
-                TRUE
-            );
-        END IF;
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trg_after_receipt_update_expense
-AFTER UPDATE ON fuel_receipts
-FOR EACH ROW EXECUTE FUNCTION trg_fn_receipt_paid_expense();
 
 -- Refresh the financial summary whenever an expense is logged (covers both
 -- manually entered expenses and the auto-generated one above).
@@ -983,6 +1069,96 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER trg_after_expense_insert
 AFTER INSERT ON expenses
 FOR EACH ROW EXECUTE FUNCTION trg_fn_expense_after_insert();
+
+-- =====================================================================
+-- DIP-STICK -> VOLUME
+-- Converts a dip-stick reading (cm from the tank bottom) into litres for
+-- one branch + fuel type:
+--   1. if a dip chart exists (tank_dip_calibrations) it is interpolated
+--      linearly between the two surrounding points (clamped at the ends),
+--   2. otherwise the tank is treated as even: reading / tank_height_cm
+--      * capacity (fuel_stock.tank_height_cm defaults to 100 cm),
+--   3. returns NULL when the tank has no capacity/calibration at all —
+--      the caller must set the tank size first.
+-- =====================================================================
+CREATE OR REPLACE FUNCTION fn_dip_to_volume(
+    p_branch_id    INT,
+    p_fuel_type_id INT,
+    p_dip_cm       NUMERIC
+) RETURNS NUMERIC AS $$
+DECLARE
+    v_capacity  NUMERIC;
+    v_height    NUMERIC;
+    v_points    INT;
+    v_lower_dip NUMERIC;
+    v_lower_vol NUMERIC;
+    v_upper_dip NUMERIC;
+    v_upper_vol NUMERIC;
+    v_volume    NUMERIC;
+BEGIN
+    IF p_dip_cm IS NULL OR p_dip_cm < 0 THEN
+        RETURN NULL;
+    END IF;
+
+    SELECT COUNT(*) INTO v_points
+      FROM tank_dip_calibrations
+     WHERE branch_id = p_branch_id AND fuel_type_id = p_fuel_type_id;
+
+    IF v_points > 0 THEN
+        SELECT dip_cm, volume_litres INTO v_lower_dip, v_lower_vol
+          FROM tank_dip_calibrations
+         WHERE branch_id = p_branch_id AND fuel_type_id = p_fuel_type_id
+           AND dip_cm <= p_dip_cm
+         ORDER BY dip_cm DESC LIMIT 1;
+
+        SELECT dip_cm, volume_litres INTO v_upper_dip, v_upper_vol
+          FROM tank_dip_calibrations
+         WHERE branch_id = p_branch_id AND fuel_type_id = p_fuel_type_id
+           AND dip_cm >= p_dip_cm
+         ORDER BY dip_cm ASC LIMIT 1;
+
+        IF v_lower_dip IS NOT NULL AND v_upper_dip IS NOT NULL THEN
+            IF v_upper_dip = v_lower_dip THEN
+                RETURN ROUND(v_lower_vol, 3);
+            END IF;
+            RETURN ROUND(
+                v_lower_vol
+                + (p_dip_cm - v_lower_dip) * (v_upper_vol - v_lower_vol)
+                  / (v_upper_dip - v_lower_dip),
+                3
+            );
+        ELSIF v_upper_dip IS NOT NULL THEN
+            -- below the lowest chart point: scale up from an empty tank
+            IF v_upper_dip = 0 THEN
+                RETURN ROUND(v_upper_vol, 3);
+            END IF;
+            RETURN ROUND(p_dip_cm * v_upper_vol / v_upper_dip, 3);
+        END IF;
+    END IF;
+
+    -- No chart point at/below this reading: fall back to the tank's own
+    -- calibrated height and capacity (the straight-line "seeded" curve).
+    SELECT fs.capacity, fs.tank_height_cm INTO v_capacity, v_height
+      FROM fuel_stock fs
+     WHERE fs.branch_id = p_branch_id AND fs.fuel_type_id = p_fuel_type_id;
+
+    IF v_capacity IS NULL OR v_capacity <= 0 THEN
+        RETURN NULL;
+    END IF;
+    IF v_height IS NULL OR v_height <= 0 THEN
+        v_height := 100;
+    END IF;
+
+    v_volume := ROUND(LEAST(p_dip_cm, v_height) * v_capacity / v_height, 3);
+
+    IF v_points > 0 AND v_lower_dip IS NOT NULL AND v_lower_dip > 0 THEN
+        -- above the highest chart point: carry on proportionally, capped by capacity
+        v_volume := ROUND(p_dip_cm * v_lower_vol / v_lower_dip, 3);
+    END IF;
+
+    RETURN LEAST(v_volume, v_capacity);
+END;
+$$ LANGUAGE plpgsql STABLE;
 
 -- =====================================================================
 -- REPORTING VIEWS / FUNCTIONS (date-range filterable, by branch and/or
@@ -1197,7 +1373,7 @@ JOIN fuel_types ft ON ft.id = bfp.fuel_type_id;
 CREATE OR REPLACE VIEW v_branch_stock_status AS
 SELECT fs.branch_id, cb.company_id, cb.branch_name,
        fs.fuel_type_id, ft.name AS fuel_type_name,
-       fs.current_volume, fs.capacity,
+       fs.current_volume, fs.capacity, fs.tank_height_cm,
        CASE WHEN fs.capacity IS NOT NULL AND fs.capacity > 0
             THEN ROUND((fs.current_volume / fs.capacity) * 100, 1)
             ELSE NULL END AS percent_full,

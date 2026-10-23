@@ -12,7 +12,7 @@ router = APIRouter(prefix="/users", tags=["users"])
 def create_user(
     payload: schemas.UserCreate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("director", "developer")),
+    current_user: models.User = Depends(auth.require_role("manager", "developer")),
 ):
     """Creates a user in the CALLER's own company. If branch_id is given, it
     must be one of that company's own branches."""
@@ -58,7 +58,7 @@ def list_users(
 def deactivate_user(
     user_id: int,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("director", "developer")),
+    current_user: models.User = Depends(auth.require_role("manager", "developer")),
 ):
     user = db.query(models.User).get(user_id)
     if not user or user.company_id != current_user.company_id:

@@ -15,7 +15,7 @@ router = APIRouter(prefix="/customers", tags=["customer accounts"])
 def register_customer(
     payload: schemas.CustomerCreate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("supervisor", "manager", "director", "developer")),
+    current_user: models.User = Depends(auth.require_role("manager", "director", "developer")),
 ):
     customer = models.Customer(**payload.model_dump(), company_id=current_user.company_id, registered_by=current_user.id)
     db.add(customer)
@@ -47,6 +47,46 @@ def get_customer(customer_id: int, db: Session = Depends(get_db), current_user: 
     return customer
 
 
+@router.put("/{customer_id}", response_model=schemas.CustomerOut)
+def update_customer(
+    customer_id: int,
+    payload: schemas.CustomerUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.require_role("manager", "director", "developer")),
+):
+    customer = db.query(models.Customer).filter(
+        models.Customer.id == customer_id,
+        models.Customer.company_id == current_user.company_id,
+    ).first()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    if not payload.is_active and customer.current_balance != 0:
+        raise HTTPException(status_code=409, detail="Settle the account balance before deactivating")
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(customer, key, value)
+    db.commit()
+    db.refresh(customer)
+    return customer
+
+
+@router.delete("/{customer_id}", status_code=204)
+def deactivate_customer(
+    customer_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.require_role("manager", "director", "developer")),
+):
+    customer = db.query(models.Customer).filter(
+        models.Customer.id == customer_id,
+        models.Customer.company_id == current_user.company_id,
+    ).first()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    if customer.current_balance != 0:
+        raise HTTPException(status_code=409, detail="Settle the account balance before deactivating")
+    customer.is_active = False
+    db.commit()
+
+
 @router.get("/{customer_id}/statement", response_model=List[schemas.CustomerTransactionOut])
 def customer_statement(
     customer_id: int,
@@ -60,7 +100,6 @@ def customer_statement(
     customer = db.query(models.Customer).get(customer_id)
     if not customer or customer.company_id != current_user.company_id:
         raise HTTPException(status_code=404, detail="Customer not found")
-
     rows = db.execute(
         text("SELECT * FROM get_customer_statement(:cid, :start, :end)"),
         {"cid": customer_id, "start": start_date, "end": end_date},
@@ -72,7 +111,7 @@ def customer_statement(
 def record_customer_payment(
     payload: schemas.CustomerPaymentCreate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("supervisor", "manager", "director", "developer")),
+    current_user: models.User = Depends(auth.require_role("attendant", "supervisor", "manager", "developer")),
 ):
     """Record cash/EFT received from a credit customer. Reduces their balance
     (stored as a negative amount on the ledger by convention) and, if
@@ -80,6 +119,8 @@ def record_customer_payment(
     customer = db.query(models.Customer).get(payload.customer_id)
     if not customer or customer.company_id != current_user.company_id:
         raise HTTPException(status_code=404, detail="Customer not found")
+    if not customer.is_active:
+        raise HTTPException(status_code=409, detail="Customer account is inactive")
     if payload.amount <= 0:
         raise HTTPException(status_code=400, detail="Payment amount must be positive")
 
@@ -99,6 +140,7 @@ def record_customer_payment(
         balance_after=0,  # overwritten by the before-insert trigger
         recorded_by=current_user.id,
         notes=payload.notes,
+        payment_channel=payload.payment_channel,
     )
     db.add(txn)
     try:

@@ -13,7 +13,7 @@ router = APIRouter(prefix="/expenses", tags=["expenses"])
 def create_category(
     payload: schemas.ExpenseCategoryCreate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("manager", "director", "developer")),
+    current_user: models.User = Depends(auth.require_role("manager", "developer", "secretary")),
 ):
     if db.query(models.ExpenseCategory).filter(
         models.ExpenseCategory.company_id == current_user.company_id,
@@ -37,16 +37,45 @@ def list_categories(db: Session = Depends(get_db), current_user: models.User = D
     )
 
 
+@router.put("/categories/{category_id}", response_model=schemas.ExpenseCategoryOut)
+def update_category(
+    category_id: int,
+    payload: schemas.ExpenseCategoryUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.require_role("manager", "developer", "secretary")),
+):
+    category = db.query(models.ExpenseCategory).filter(
+        models.ExpenseCategory.id == category_id,
+        models.ExpenseCategory.company_id == current_user.company_id,
+    ).first()
+    if category is None:
+        raise HTTPException(status_code=404, detail="Expense category not found")
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Category name is required")
+    duplicate = db.query(models.ExpenseCategory).filter(
+        models.ExpenseCategory.company_id == current_user.company_id,
+        models.ExpenseCategory.name == name,
+        models.ExpenseCategory.id != category_id,
+    ).first()
+    if duplicate:
+        raise HTTPException(status_code=400, detail="Category already exists")
+    category.name = name
+    db.commit()
+    db.refresh(category)
+    return category
+
+
 @router.post("", response_model=schemas.ExpenseOut)
 def record_expense(
     payload: schemas.ExpenseCreate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("supervisor", "manager", "director", "developer")),
+    current_user: models.User = Depends(auth.require_role("manager", "developer", "secretary")),
 ):
     """Record a manual expense (rent, salaries, maintenance, etc). Leave
     branch_id unset for a company-wide/head-office expense, or set it to
     attribute the cost to one branch's till. Expenses generated automatically
-    when a supplier invoice is paid in full are posted straight to the
+    when a supplier invoice payment is recorded are posted straight to the
     `expenses` table by a database trigger — you don't create those here,
     they'll just show up in the listings/reports with is_system_generated=true."""
     category = db.query(models.ExpenseCategory).get(payload.category_id)
@@ -67,6 +96,7 @@ def record_expense(
         expense_date=payload.expense_date or date.today(),
         recorded_by=current_user.id,
         is_system_generated=False,
+        payment_channel=payload.payment_channel,
     )
     db.add(expense)
     db.commit()
@@ -81,7 +111,7 @@ def list_expenses(
     branch_id: Optional[int] = None,
     category_id: Optional[int] = None,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user),
+    current_user: models.User = Depends(auth.require_role("manager", "developer", "secretary")),
 ):
     q = db.query(models.Expense).filter(models.Expense.company_id == current_user.company_id)
     if start_date:

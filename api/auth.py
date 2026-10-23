@@ -132,3 +132,42 @@ def verify_branch_access(user: models.User, branch_id: int, db: Session) -> mode
     if user.branch_id is not None and user.branch_id != branch_id:
         raise HTTPException(status_code=403, detail="You are not assigned to this branch")
     return branch
+
+
+# ------------------------------------------------- cross-company (dev) ----
+# The developer and their dev_support team set up tanks and calibrations for
+# whichever tenant they are working for, so they may name a company_id that
+# isn't their own. Everyone else is pinned to their own company.
+PLATFORM_ROLES = ("developer", "dev_support")
+
+
+def resolve_company_id(
+    db: Session, current_user: models.User, company_id: Optional[int] = None
+) -> int:
+    """Company a cross-tenant operation targets: defaults to the caller's own
+    company; developer / dev_support may pass any company id (the Tanks
+    screen's company picker)."""
+    if company_id is None or company_id == current_user.company_id:
+        return current_user.company_id
+    if current_user.role not in PLATFORM_ROLES:
+        raise HTTPException(
+            status_code=403,
+            detail="Only a developer or dev_support account can work across companies",
+        )
+    if db.query(models.Company).get(company_id) is None:
+        raise HTTPException(status_code=404, detail="Company not found")
+    return company_id
+
+
+def verify_tank_branch(
+    db: Session, current_user: models.User, company_id: int, branch_id: int
+) -> models.CompanyBranch:
+    """Branch must exist inside `company_id`. When that's the caller's own
+    company the usual rules still apply (a branch-tied user only touches
+    their own branch)."""
+    if company_id == current_user.company_id:
+        return verify_branch_access(current_user, branch_id, db)
+    branch = db.query(models.CompanyBranch).get(branch_id)
+    if branch is None or branch.company_id != company_id:
+        raise HTTPException(status_code=404, detail="Branch not found in that company")
+    return branch

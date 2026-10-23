@@ -6,12 +6,13 @@ trigger-maintained fields are marked read-only from the app's side.
 """
 from sqlalchemy import (
     Column, Integer, BigInteger, String, Text, Boolean, Numeric, Date, DateTime,
-    ForeignKey, Enum, UniqueConstraint, func, Computed
+    Time, ForeignKey, Enum, UniqueConstraint, func, Computed
 )
 from .database import Base
 
 # ---- Enums (must match the Postgres ENUM types in schema.sql) ----
-USER_ROLES = ("attendant", "supervisor", "manager", "director", "developer")
+USER_ROLES = ("attendant", "supervisor", "manager", "director", "developer",
+              "dev_support", "secretary")
 PAYMENT_STATUSES = ("unpaid", "partial", "paid")
 PAYMENT_METHODS = ("cash", "card", "mobile_money", "account")
 CUSTOMER_TXN_TYPES = ("fill_up", "payment", "adjustment")
@@ -30,6 +31,23 @@ class Company(Base):
     url = Column(String(255))
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class CompanyRegistrationRequest(Base):
+    __tablename__ = "company_registration_requests"
+    id = Column(Integer, primary_key=True)
+    company_name = Column(String(150), nullable=False)
+    address = Column(Text, nullable=False)
+    branch_count = Column(Integer, nullable=False)
+    phone = Column(String(30), nullable=False)
+    email = Column(String(150), nullable=False)
+    message = Column(Text, nullable=False)
+    status = Column(String(20), nullable=False, default="pending")
+    submitted_by = Column(Integer, ForeignKey("users.id"))
+    reviewed_by = Column(Integer, ForeignKey("users.id"))
+    company_id = Column(Integer, ForeignKey("companies.id"))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    reviewed_at = Column(DateTime(timezone=True))
 
 
 class CompanyBranch(Base):
@@ -70,6 +88,7 @@ class Supplier(Base):
     phone = Column(String(30))
     email = Column(String(150))
     address = Column(Text)
+    vat_number = Column(String(50))
     is_active = Column(Boolean, nullable=False, default=True)
     created_by = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -106,7 +125,20 @@ class FuelStock(Base):
     fuel_type_id = Column(Integer, ForeignKey("fuel_types.id"), primary_key=True)
     current_volume = Column(Numeric(14, 3), nullable=False, default=0)
     capacity = Column(Numeric(14, 3))  # tank/storage capacity; NULL = not tracked
+    tank_height_cm = Column(Numeric(8, 2), nullable=False, default=100)  # calibrated dip-stick height
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class TankDipCalibration(Base):
+    __tablename__ = "tank_dip_calibrations"
+    __table_args__ = (UniqueConstraint("branch_id", "fuel_type_id", "dip_cm"),)
+    id = Column(Integer, primary_key=True)
+    branch_id = Column(Integer, ForeignKey("company_branches.id"), nullable=False)
+    fuel_type_id = Column(Integer, ForeignKey("fuel_types.id"), nullable=False)
+    dip_cm = Column(Numeric(8, 2), nullable=False)
+    volume_litres = Column(Numeric(14, 3), nullable=False)
+    created_by = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class FuelReceipt(Base):
@@ -123,6 +155,8 @@ class FuelReceipt(Base):
     amount_paid = Column(Numeric(14, 2), nullable=False, default=0)  # trigger-maintained — read only
     received_date = Column(Date, nullable=False)
     received_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    dip_before_cm = Column(Numeric(8, 2))   # dip-stick reading before the delivery
+    dip_after_cm = Column(Numeric(8, 2))    # dip-stick reading after the delivery
     notes = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -135,6 +169,8 @@ class SupplierPayment(Base):
     payment_date = Column(Date, nullable=False)
     paid_by = Column(Integer, ForeignKey("users.id"), nullable=False)
     notes = Column(Text)
+    reference = Column(String(100))  # bank transfer / EFT / cheque reference
+    payment_channel = Column(String(20), nullable=False, default="unknown")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -154,12 +190,56 @@ class Customer(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class ShiftTemplate(Base):
+    __tablename__ = "shift_templates"
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)
+    name = Column(String(60), nullable=False)
+    start_time = Column(Time, nullable=False)
+    end_time = Column(Time, nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+
+
+class Shift(Base):
+    """One operating period at a branch: the date + time window the forecourt
+    ran for, whether sales were captured live ('realtime') or entered as a
+    total afterwards ('end_of_shift'), and who opened/closed it."""
+    __tablename__ = "shifts"
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)
+    branch_id = Column(Integer, ForeignKey("company_branches.id"), nullable=False)
+    shift_date = Column(Date, nullable=False)
+    shift_label = Column(String(60), nullable=False, default="Custom")
+    start_time = Column(Time, nullable=False)
+    end_time = Column(Time, nullable=False)
+    entry_mode = Column(String(20), nullable=False, default="realtime")
+    status = Column(String(10), nullable=False, default="open")  # open | closed
+    opened_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    opened_at = Column(DateTime(timezone=True), server_default=func.now())
+    closed_by = Column(Integer, ForeignKey("users.id"))
+    closed_at = Column(DateTime(timezone=True))
+    notes = Column(Text)
+
+
+class ShiftAttendance(Base):
+    """A user signing in to a shift — the attendance trail shown on the
+    Shifts page (who was on the forecourt, when they joined/left)."""
+    __tablename__ = "shift_attendance"
+    id = Column(Integer, primary_key=True)
+    shift_id = Column(Integer, ForeignKey("shifts.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    joined_at = Column(DateTime(timezone=True), server_default=func.now())
+    left_at = Column(DateTime(timezone=True))
+
+
 class Sale(Base):
     __tablename__ = "sales"
     id = Column(Integer, primary_key=True)
+    client_request_id = Column(String(64), unique=True)
     branch_id = Column(Integer, ForeignKey("company_branches.id"), nullable=False)
     fuel_type_id = Column(Integer, ForeignKey("fuel_types.id"), nullable=False)
     customer_id = Column(Integer, ForeignKey("customers.id"))
+    shift_id = Column(Integer, ForeignKey("shifts.id"))  # shift this sale was booked to
     volume = Column(Numeric(14, 3), nullable=False)
     cost_price = Column(Numeric(12, 2), nullable=False)
     sell_price = Column(Numeric(12, 2), nullable=False)
@@ -167,6 +247,7 @@ class Sale(Base):
     payment_method = Column(Enum(*PAYMENT_METHODS, name="payment_method"), nullable=False)
     served_by = Column(Integer, ForeignKey("users.id"), nullable=False)
     sale_date = Column(DateTime(timezone=True), server_default=func.now())
+    entry_source = Column(String(20), nullable=False, default="realtime")  # realtime | shift_close
     notes = Column(Text)
 
 
@@ -182,6 +263,7 @@ class CustomerTransaction(Base):
     recorded_by = Column(Integer, ForeignKey("users.id"), nullable=False)
     transaction_date = Column(DateTime(timezone=True), server_default=func.now())
     notes = Column(Text)
+    payment_channel = Column(String(20), nullable=False, default="unknown")
 
 
 class ExpenseCategory(Base):
@@ -204,9 +286,11 @@ class Expense(Base):
     reference = Column(String(100))
     notes = Column(Text)
     receipt_id = Column(Integer, ForeignKey("fuel_receipts.id"))
+    supplier_payment_id = Column(Integer, ForeignKey("supplier_payments.id"))
     expense_date = Column(Date, nullable=False)
     recorded_by = Column(Integer, ForeignKey("users.id"))
     is_system_generated = Column(Boolean, nullable=False, default=False)  # read only — set by trigger
+    payment_channel = Column(String(20), nullable=False, default="unknown")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 

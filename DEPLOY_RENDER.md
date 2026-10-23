@@ -81,21 +81,26 @@ flutter build apk --dart-define=API_BASE_URL=https://YOUR-API.onrender.com
 
 ## 3. GitHub keepalive
 
-In the **backend** GitHub repository, add the Actions variable
-`RENDER_HEALTH_URL` with this value:
+In the **backend** GitHub repository, set the Actions variable
+`RENDER_HEALTH_URL` to the deployed API health URL:
 
 ```text
 https://YOUR-API.onrender.com/health?check_database=true
 ```
 
-The scheduled workflow in `.github/workflows/render-keepalive.yml` pings it
-every ten minutes and can be run manually in GitHub Actions. Without the
-variable, the job skips. GitHub scheduled jobs can be delayed or missed, and
-GitHub may disable schedules in inactive public repositories; the ping does
-not guarantee zero cold starts. Render's free web service sleeps after 15
-minutes without traffic and has a monthly free instance-hour allowance. The
-database check also generates activity for Layerbase. Neither scheduled
-workflow nor health check is a substitute for backups or paid availability.
+Also set the Actions **secret** `LAYERBASE_CONNECTION_STRING` to Layerbase's
+PostgreSQL connection URL, including `sslmode=require`. The secret stays in
+GitHub Actions settings and must never be committed to this repository.
+
+The scheduled workflow in `.github/workflows/render-keepalive.yml` runs every
+ten minutes and can also be started manually. One step requests the Render API
+health endpoint; another runs `SELECT 1` directly on Layerbase. Without the
+Render URL variable, the Render step skips. The Layerbase step fails if its
+secret is missing. GitHub scheduled jobs can be delayed or missed, and GitHub
+may disable schedules in inactive public repositories. This does not
+guarantee zero cold starts. Render's free web service sleeps after 15 minutes
+without traffic and has a monthly free instance-hour allowance. The checks
+are not a substitute for backups or paid availability.
 
 ## Render CLI (optional)
 

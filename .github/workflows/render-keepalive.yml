@@ -1,4 +1,4 @@
-name: Keep Render API warm
+name: Keep Render and Layerbase warm
 
 on:
   schedule:
@@ -9,12 +9,28 @@ on:
 permissions: {}
 
 jobs:
-  ping:
-    if: vars.RENDER_HEALTH_URL != ''
+  keepalive:
     runs-on: ubuntu-latest
     timeout-minutes: 3
+    env:
+      HEALTH_URL: ${{ vars.RENDER_HEALTH_URL }}
     steps:
-      - name: Ping API and database
-        env:
-          HEALTH_URL: ${{ vars.RENDER_HEALTH_URL }}
+      - name: Ping Render API
+        if: env.HEALTH_URL != ''
         run: curl --fail --show-error --silent --max-time 120 "$HEALTH_URL"
+      - name: Ensure PostgreSQL client is available
+        run: |
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y postgresql-client
+          fi
+      - name: Query Layerbase
+        env:
+          PG_CONN_STRING: ${{ secrets.LAYERBASE_CONNECTION_STRING }}
+          PGCONNECT_TIMEOUT: '20'
+        run: |
+          if [ -z "$PG_CONN_STRING" ]; then
+            echo 'Missing LAYERBASE_CONNECTION_STRING repository secret' >&2
+            exit 1
+          fi
+          timeout 90s psql "$PG_CONN_STRING" -X -v ON_ERROR_STOP=1 -Atqc 'SELECT 1' | grep -qx 1

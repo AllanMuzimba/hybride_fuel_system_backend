@@ -21,14 +21,35 @@ router = APIRouter(tags=["companies & branches"])
 def create_company(
     payload: schemas.CompanyCreate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("developer")),
+    current_user: models.User = Depends(auth.require_role("developer", "dev_support")),
 ):
     """Registers a new company/tenant (and seeds its default 'Fuel Purchases'
     expense category via the fn_create_company() database function). After
     this, call POST /companies/{company_id}/bootstrap-admin once to create
-    that company's first login."""
+    that company's first login.
+
+    A developer registers a company that works straight away
+    (is_active=True, needs_confirmation=False); a dev_support registration is
+    only an application — it starts inactive with needs_confirmation=True and
+    registered_by set to the dev_support user, and a developer must confirm it
+    (POST /companies/{company_id}/confirm) before it can operate. A developer
+    records themselves in registered_by too.
+
+    Branches: pass branch_names to name them up front (entries are trimmed,
+    blank ones dropped, a duplicate name for this company is rejected with
+    400); when that's absent or empty the branch_count default names
+    ("Branch 1", "Branch 2", ...) are created as before."""
     if db.query(models.Company).filter(models.Company.slug == payload.slug).first():
         raise HTTPException(status_code=400, detail="That company slug is already taken")
+
+    branch_names: List[str] = []
+    for entry in payload.branch_names or []:
+        name = entry.strip()
+        if not name:
+            continue
+        if name in branch_names:
+            raise HTTPException(status_code=400, detail="A branch with that name already exists")
+        branch_names.append(name)
 
     row = db.execute(
         text(
@@ -43,11 +64,49 @@ def create_company(
     db.commit()
 
     company = db.query(models.Company).get(row["id"])
-    db.add_all([
-        models.CompanyBranch(company_id=company.id, branch_name=f"Branch {number}",
-                             address=payload.address, phone=payload.phone)
-        for number in range(1, payload.branch_count + 1)
-    ])
+    company.registered_by = current_user.id
+    if current_user.role != "developer":
+        company.is_active = False
+        company.needs_confirmation = True
+    db.commit()
+
+    if branch_names:
+        db.add_all([
+            models.CompanyBranch(company_id=company.id, branch_name=name,
+                                 address=payload.address, phone=payload.phone)
+            for name in branch_names
+        ])
+    else:
+        db.add_all([
+            models.CompanyBranch(company_id=company.id, branch_name=f"Branch {number}",
+                                 address=payload.address, phone=payload.phone)
+            for number in range(1, payload.branch_count + 1)
+        ])
+    db.commit()
+    db.refresh(company)
+    return company
+
+
+@router.post("/companies/{company_id}/confirm", response_model=schemas.CompanyOut)
+def confirm_company(
+    company_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.require_role("developer")),
+):
+    """Developer sign-off for a company the dev_support team registered:
+    activates it (is_active=True), clears needs_confirmation and stamps
+    confirmed_at/confirmed_by. 404 when the company doesn't exist, 409 when
+    it isn't waiting for confirmation."""
+    company = db.query(models.Company).get(company_id)
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    if not company.needs_confirmation:
+        raise HTTPException(status_code=409, detail="This company does not need confirmation")
+
+    company.is_active = True
+    company.needs_confirmation = False
+    company.confirmed_at = datetime.now(timezone.utc)
+    company.confirmed_by = current_user.id
     db.commit()
     db.refresh(company)
     return company
@@ -126,8 +185,14 @@ def list_companies(
     current_user: models.User = Depends(auth.require_role("developer", "dev_support")),
 ):
     """Every tenant in the system — the developer and their dev_support team
-    pick the company a new tank belongs to from this list."""
+    pick the company a new tank belongs to from this list.
+
+    dev_support only ever sees confirmed companies (needs_confirmation=False),
+    whatever query parameters are passed; the developer sees every company and
+    still filters inactive ones out with active_only."""
     q = db.query(models.Company)
+    if current_user.role != "developer":
+        q = q.filter(models.Company.needs_confirmation.is_(False))
     if active_only:
         q = q.filter(models.Company.is_active.is_(True))
     return q.order_by(models.Company.name).all()
@@ -204,52 +269,135 @@ def bootstrap_admin(
 # ---------------------------------------------------------------------
 # Branches. Each company manages its own branches.
 # ---------------------------------------------------------------------
+def _branch_row_out(branch: models.CompanyBranch, company_name: Optional[str]) -> dict:
+    """BranchOut payload with the owning company's name filled in — the shape
+    every branch endpoint answers with."""
+    data = schemas.BranchOut.model_validate(branch).model_dump()
+    data["company_name"] = company_name
+    return data
+
+
+def _branch_out(db: Session, branch: models.CompanyBranch) -> dict:
+    """Same payload for a branch that was loaded on its own: one extra query
+    for the company's name."""
+    company_name = db.query(models.Company.name).filter(
+        models.Company.id == branch.company_id
+    ).scalar()
+    return _branch_row_out(branch, company_name)
+
+
+def _branch_for_edit(db: Session, current_user: models.User, branch_id: int) -> models.CompanyBranch:
+    """Resolve a branch that the caller wants to change: 404 when it doesn't
+    exist, 404 for a manager pointing at another company's branch, while
+    developer / dev_support may edit any tenant's branch (the same
+    cross-company rule resolve_company_id applies to company_id)."""
+    branch = db.query(models.CompanyBranch).get(branch_id)
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    if branch.company_id != current_user.company_id and current_user.role not in auth.PLATFORM_ROLES:
+        raise HTTPException(status_code=404, detail="Branch not found in your company")
+    return branch
+
+
 @router.post("/branches", response_model=schemas.BranchOut)
 def create_branch(
     payload: schemas.BranchCreate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("manager", "developer")),
+    current_user: models.User = Depends(auth.require_role("manager", "developer", "dev_support")),
 ):
+    """Opens a branch in your company; developer / dev_support may pass
+    payload.company_id to open one for another tenant, everyone else is
+    pinned to their own company."""
+    target_company = auth.resolve_company_id(db, current_user, payload.company_id)
     if db.query(models.CompanyBranch).filter(
-        models.CompanyBranch.company_id == current_user.company_id,
+        models.CompanyBranch.company_id == target_company,
         models.CompanyBranch.branch_name == payload.branch_name,
     ).first():
         raise HTTPException(status_code=400, detail="A branch with that name already exists")
 
-    branch = models.CompanyBranch(company_id=current_user.company_id, **payload.model_dump())
+    fields = payload.model_dump()
+    fields.pop("company_id", None)
+    branch = models.CompanyBranch(company_id=target_company, **fields)
     db.add(branch)
     db.commit()
     db.refresh(branch)
-    return branch
+    return _branch_out(db, branch)
 
 
 @router.get("/branches", response_model=List[schemas.BranchOut])
 def list_branches(
     active_only: bool = True,
     company_id: Optional[int] = None,
+    all_companies: bool = False,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user),
 ):
     """Branches of the logged-in user's own company only — pass company_id
     to list another tenant's branches (developer / dev_support only, used by
-    the Tanks screen's company -> branch picker)."""
-    target_company = auth.resolve_company_id(db, current_user, company_id)
-    q = db.query(models.CompanyBranch).filter(models.CompanyBranch.company_id == target_company)
+    the Tanks screen's company -> branch picker).
+
+    all_companies=true returns every branch of every company and is reserved
+    for developer / dev_support (403 otherwise). Both modes answer from a
+    single join, so every row carries its company_name."""
+    q = db.query(
+        models.CompanyBranch, models.Company.name.label("company_name")
+    ).join(models.Company, models.Company.id == models.CompanyBranch.company_id)
+    if all_companies:
+        if current_user.role not in auth.PLATFORM_ROLES:
+            raise HTTPException(
+                status_code=403,
+                detail="Only a developer or dev_support account can list every company's branches",
+            )
+    else:
+        target_company = auth.resolve_company_id(db, current_user, company_id)
+        q = q.filter(models.CompanyBranch.company_id == target_company)
     if active_only:
         q = q.filter(models.CompanyBranch.is_active.is_(True))
-    return q.order_by(models.CompanyBranch.branch_name).all()
+    rows = q.order_by(models.Company.name, models.CompanyBranch.branch_name).all()
+    return [_branch_row_out(branch, company_name) for branch, company_name in rows]
+
+
+@router.patch("/branches/{branch_id}", response_model=schemas.BranchOut)
+def update_branch(
+    branch_id: int,
+    payload: schemas.BranchUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.require_role("manager", "developer", "dev_support")),
+):
+    """Edit a branch: a company manager may change their own company's
+    branches, developer / dev_support any tenant's. Only the fields present
+    in the payload are applied, and a rename onto a name already used in
+    that company is rejected with 400."""
+    branch = _branch_for_edit(db, current_user, branch_id)
+    fields = payload.model_dump(exclude_unset=True)
+    if "branch_name" in fields:
+        fields["branch_name"] = fields["branch_name"].strip()
+        if not fields["branch_name"]:
+            raise HTTPException(status_code=400, detail="Branch name must not be empty")
+        if db.query(models.CompanyBranch).filter(
+            models.CompanyBranch.company_id == branch.company_id,
+            models.CompanyBranch.branch_name == fields["branch_name"],
+            models.CompanyBranch.id != branch.id,
+        ).first():
+            raise HTTPException(status_code=400, detail="A branch with that name already exists")
+    for field, value in fields.items():
+        setattr(branch, field, value.strip() if isinstance(value, str) else value)
+    db.commit()
+    db.refresh(branch)
+    return _branch_out(db, branch)
 
 
 @router.patch("/branches/{branch_id}/deactivate", response_model=schemas.BranchOut)
 def deactivate_branch(
     branch_id: int,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("manager", "developer")),
+    current_user: models.User = Depends(auth.require_role("manager", "developer", "dev_support")),
 ):
-    branch = db.query(models.CompanyBranch).get(branch_id)
-    if not branch or branch.company_id != current_user.company_id:
-        raise HTTPException(status_code=404, detail="Branch not found in your company")
+    """Retires a branch (is_active=False). A manager can only deactivate
+    their own company's branches; developer / dev_support may deactivate any
+    tenant's."""
+    branch = _branch_for_edit(db, current_user, branch_id)
     branch.is_active = False
     db.commit()
     db.refresh(branch)
-    return branch
+    return _branch_out(db, branch)

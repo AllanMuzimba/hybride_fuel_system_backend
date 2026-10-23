@@ -40,6 +40,13 @@ CREATE TABLE companies (
     slug            VARCHAR(100) UNIQUE NOT NULL,     -- e.g. for a subdomain or public URL
     url             VARCHAR(255),
     is_active       BOOLEAN      NOT NULL DEFAULT TRUE,
+    -- registered_by/confirmed_by point at users(id); the FKs are declared
+    -- right after the users table below (companies <-> users reference each
+    -- other, so PostgreSQL will not accept them inline here).
+    registered_by   INT,
+    confirmed_by    INT,
+    confirmed_at    TIMESTAMPTZ,
+    needs_confirmation BOOLEAN   NOT NULL DEFAULT FALSE,   -- dev_support sign-ups wait for a developer
     created_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
 
@@ -86,6 +93,14 @@ CREATE UNIQUE INDEX uq_users_email_ci
 CREATE UNIQUE INDEX uq_users_phone_digits
     ON users(regexp_replace(phone, '[^0-9]', '', 'g'))
     WHERE phone IS NOT NULL AND regexp_replace(phone, '[^0-9]', '', 'g') <> '';
+
+-- companies.registered_by / confirmed_by -> users(id). Declared here rather
+-- than inside the companies table above because the two tables reference each
+-- other and PostgreSQL only accepts foreign keys to tables that already exist.
+ALTER TABLE companies
+    ADD CONSTRAINT fk_companies_registered_by FOREIGN KEY (registered_by) REFERENCES users(id);
+ALTER TABLE companies
+    ADD CONSTRAINT fk_companies_confirmed_by  FOREIGN KEY (confirmed_by)  REFERENCES users(id);
 
 CREATE TABLE password_reset_tokens (
     id SERIAL PRIMARY KEY,

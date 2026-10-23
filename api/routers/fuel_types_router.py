@@ -13,19 +13,27 @@ router = APIRouter(prefix="/fuel-types", tags=["fuel types & stock"])
 def create_fuel_type(
     payload: schemas.FuelTypeCreate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("manager", "developer")),
+    current_user: models.User = Depends(
+        auth.require_role("manager", "director", "developer", "dev_support")
+    ),
 ):
     """Defines a fuel type for your company and its HQ reference price
     (default_cost/default_sell_price). A database trigger immediately seeds
     every existing branch's own branch_fuel_prices row from these defaults —
     branches can then move their own price independently (see the
-    /fuel-types/branch-prices endpoints below)."""
+    /fuel-types/branch-prices endpoints below). developer / dev_support may
+    name payload.company_id to define it for another tenant."""
+    target_company = auth.resolve_company_id(db, current_user, payload.company_id)
+    name = payload.name.strip()
     if db.query(models.FuelType).filter(
-        models.FuelType.company_id == current_user.company_id, models.FuelType.name == payload.name
+        models.FuelType.company_id == target_company, models.FuelType.name == name
     ).first():
         raise HTTPException(status_code=400, detail="Fuel type already exists for your company")
 
-    fuel_type = models.FuelType(**payload.model_dump(), company_id=current_user.company_id, updated_by=current_user.id)
+    values = payload.model_dump()
+    values.pop("company_id", None)
+    values["name"] = name
+    fuel_type = models.FuelType(**values, company_id=target_company, updated_by=current_user.id)
     db.add(fuel_type)
     db.commit()
     db.refresh(fuel_type)
@@ -56,16 +64,30 @@ def list_fuel_types(
 def update_default_prices(
     fuel_type_id: int,
     payload: schemas.FuelTypeUpdate,
+    company_id: Optional[int] = None,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("manager", "developer")),
+    current_user: models.User = Depends(
+        auth.require_role("manager", "director", "developer", "dev_support")
+    ),
 ):
-    """Updates HQ's reference price for this fuel type. This does NOT change
-    what any branch actually charges — each branch's live price lives in
-    branch_fuel_prices and is only changed via PATCH /fuel-types/branch-prices."""
+    """Renames the fuel type and/or updates HQ's reference price for it.
+    Branch selling prices are unchanged — each branch's live price lives in
+    branch_fuel_prices and only moves through the branch-prices endpoints.
+    developer / dev_support may pass company_id for another tenant."""
+    target_company = auth.resolve_company_id(db, current_user, company_id)
     fuel_type = db.query(models.FuelType).get(fuel_type_id)
-    if not fuel_type or fuel_type.company_id != current_user.company_id:
+    if not fuel_type or fuel_type.company_id != target_company:
         raise HTTPException(status_code=404, detail="Fuel type not found")
 
+    if payload.name is not None:
+        name = payload.name.strip()
+        if db.query(models.FuelType).filter(
+            models.FuelType.company_id == target_company,
+            models.FuelType.name == name,
+            models.FuelType.id != fuel_type.id,
+        ).first():
+            raise HTTPException(status_code=400, detail="Fuel type already exists for your company")
+        fuel_type.name = name
     if payload.default_cost is not None:
         fuel_type.default_cost = payload.default_cost
     if payload.default_sell_price is not None:
@@ -316,16 +338,19 @@ def set_dip_calibration(
 def list_branch_prices(
     branch_id: Optional[int] = None,
     fuel_type_id: Optional[int] = None,
+    company_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user),
 ):
     """Every branch's current price per fuel type (v_branch_fuel_prices),
     scoped to your company. Defaults to every branch — HQ uses this to
-    compare pricing across branches at a glance; pass branch_id to see one."""
+    compare pricing across branches at a glance; pass branch_id to see one,
+    or company_id to read another tenant (developer / dev_support only)."""
+    target_company = auth.resolve_company_id(db, current_user, company_id)
     query = "SELECT * FROM v_branch_fuel_prices WHERE company_id = :company_id"
-    params = {"company_id": current_user.company_id}
+    params = {"company_id": target_company}
     if branch_id is not None:
-        auth.verify_branch_access(current_user, branch_id, db)
+        auth.verify_tank_branch(db, current_user, target_company, branch_id)
         query += " AND branch_id = :branch_id"
         params["branch_id"] = branch_id
     if fuel_type_id is not None:
@@ -340,13 +365,24 @@ def list_branch_prices(
 def update_branch_price(
     payload: schemas.BranchFuelPriceUpdate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("manager", "developer")),
+    current_user: models.User = Depends(
+        auth.require_role("manager", "director", "developer", "dev_support")
+    ),
 ):
     """Set one branch's selling price and/or cost for one fuel type. A
     manager tied to that branch can only move their own branch's price;
-    a company-wide manager/director/developer can move any branch's.
-    Every change is logged to the activity log for HQ audit (via trigger)."""
-    branch = auth.verify_branch_access(current_user, payload.branch_id, db)
+    a company-wide manager/director can move any branch's; developer and
+    dev_support may price any branch of any company. Every change is logged
+    to the activity log for HQ audit (via trigger)."""
+    branch = db.query(models.CompanyBranch).get(payload.branch_id)
+    if branch is None:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    target_company = auth.resolve_company_id(db, current_user, branch.company_id)
+    auth.verify_tank_branch(db, current_user, target_company, payload.branch_id)
+
+    fuel_type = db.query(models.FuelType).get(payload.fuel_type_id)
+    if not fuel_type or fuel_type.company_id != target_company:
+        raise HTTPException(status_code=404, detail="Fuel type not found in that company")
 
     price = db.query(models.BranchFuelPrice).get((payload.branch_id, payload.fuel_type_id))
     if not price:
@@ -368,3 +404,65 @@ def update_branch_price(
         {"b": payload.branch_id, "f": payload.fuel_type_id},
     ).mappings().first()
     return dict(row)
+
+
+@router.put("/{fuel_type_id}/branch-prices")
+def apply_branch_prices(
+    fuel_type_id: int,
+    payload: schemas.BranchPriceApply,
+    company_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(
+        auth.require_role("manager", "director", "developer", "dev_support")
+    ),
+):
+    """Reprice one fuel type across several branches of a company in a
+    single call (the fuel type must belong to that company — 404
+    otherwise). developer / dev_support may pass company_id for another
+    tenant.
+
+    Omit branch_ids to hit every branch of the company; list branch_ids to
+    hit only those (each must be one of its branches — 404 — and a user
+    tied to one branch may only name their own — 403). Whichever of
+    current_cost / sell_price was sent is written to each branch's
+    branch_fuel_prices row — created from the payload when a branch has no
+    row yet — together with updated_by. Answers with how many branches were
+    touched and their ids."""
+    target_company = auth.resolve_company_id(db, current_user, company_id)
+    fuel_type = db.query(models.FuelType).get(fuel_type_id)
+    if not fuel_type or fuel_type.company_id != target_company:
+        raise HTTPException(status_code=404, detail="Fuel type not found")
+
+    if payload.branch_ids is None:
+        target_ids = [
+            branch.id
+            for branch in db.query(models.CompanyBranch)
+            .filter(models.CompanyBranch.company_id == target_company)
+            .order_by(models.CompanyBranch.id)
+            .all()
+        ]
+    else:
+        target_ids = []
+        for branch_id in payload.branch_ids:
+            auth.verify_tank_branch(db, current_user, target_company, branch_id)
+            if branch_id not in target_ids:
+                target_ids.append(branch_id)
+
+    for branch_id in target_ids:
+        price = db.query(models.BranchFuelPrice).get((branch_id, fuel_type_id))
+        if not price:
+            price = models.BranchFuelPrice(
+                branch_id=branch_id,
+                fuel_type_id=fuel_type_id,
+                current_cost=payload.current_cost if payload.current_cost is not None else 0,
+                sell_price=payload.sell_price if payload.sell_price is not None else 0,
+            )
+            db.add(price)
+        if payload.current_cost is not None:
+            price.current_cost = payload.current_cost
+        if payload.sell_price is not None:
+            price.sell_price = payload.sell_price
+        price.updated_by = current_user.id
+    db.commit()
+
+    return {"updated": len(target_ids), "branch_ids": target_ids}

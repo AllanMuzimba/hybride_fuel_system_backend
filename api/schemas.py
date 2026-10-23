@@ -3,8 +3,8 @@ Pydantic schemas used by the API — these are what the Flutter app
 actually sends/receives as JSON.
 """
 from datetime import date, datetime, time
-from typing import List, Optional, Literal
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Annotated, List, Optional, Literal
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # ---------------------------------------------------------------- auth ----
 class Token(BaseModel):
@@ -50,6 +50,9 @@ class CompanyCreate(BaseModel):
     phone: Optional[str] = None
     email: Optional[str] = None
     url: Optional[str] = None
+    branch_names: Optional[List[Annotated[str, Field(min_length=2, max_length=150)]]] = Field(
+        default=None, max_length=100
+    )
 
 
 class CompanyOut(BaseModel):
@@ -64,6 +67,9 @@ class CompanyOut(BaseModel):
     slug: str
     url: Optional[str] = None
     is_active: bool
+    needs_confirmation: bool
+    confirmed_at: Optional[datetime] = None
+    registered_by: Optional[int] = None
     created_at: datetime
 
 
@@ -96,12 +102,25 @@ class BranchCreate(BaseModel):
     address: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    company_id: Optional[int] = None
+
+
+class BranchUpdate(BaseModel):
+    """Partial update of a branch (PATCH /branches/{branch_id}) — only the
+    fields present in the payload are applied."""
+    branch_name: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    is_active: Optional[bool] = None
 
 
 class BranchOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     company_id: int
+    company_name: Optional[str] = None
     branch_name: str
     phone: Optional[str] = None
     address: Optional[str] = None
@@ -227,16 +246,18 @@ class SupplierOut(BaseModel):
 
 # ------------------------------------------------------------ fuel types ----
 class FuelTypeCreate(BaseModel):
-    name: str
-    default_cost: float
-    default_sell_price: float
+    name: str = Field(min_length=2, max_length=100)
+    default_cost: float = Field(ge=0)
+    default_sell_price: float = Field(ge=0)
+    company_id: Optional[int] = None  # developer / dev_support only
 
 
 class FuelTypeUpdate(BaseModel):
-    """Updates HQ's reference/default price. Does NOT change any branch's
-    actual selling price — use PATCH /fuel-types/branch-prices for that."""
-    default_cost: Optional[float] = None
-    default_sell_price: Optional[float] = None
+    """Updates a fuel type's name and/or HQ reference price. Branch selling
+    prices change through PUT /fuel-types/{id}/branch-prices."""
+    name: Optional[str] = Field(default=None, min_length=2, max_length=100)
+    default_cost: Optional[float] = Field(default=None, ge=0)
+    default_sell_price: Optional[float] = Field(default=None, ge=0)
 
 
 class FuelTypeOut(BaseModel):
@@ -254,6 +275,20 @@ class BranchFuelPriceUpdate(BaseModel):
     fuel_type_id: int
     current_cost: Optional[float] = None
     sell_price: Optional[float] = None
+
+
+class BranchPriceApply(BaseModel):
+    """Reprice one fuel type across many branches at once
+    (PUT /fuel-types/{fuel_type_id}/branch-prices)."""
+    current_cost: Optional[float] = None
+    sell_price: Optional[float] = None
+    branch_ids: Optional[List[int]] = None
+
+    @model_validator(mode="after")
+    def _require_cost_or_price(self) -> "BranchPriceApply":
+        if self.current_cost is None and self.sell_price is None:
+            raise ValueError("Provide current_cost, sell_price or both")
+        return self
 
 
 class BranchFuelPriceOut(BaseModel):

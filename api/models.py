@@ -30,6 +30,10 @@ class Company(Base):
     slug = Column(String(100), unique=True, nullable=False)
     url = Column(String(255))
     is_active = Column(Boolean, nullable=False, default=True)
+    registered_by = Column(Integer, ForeignKey("users.id"))
+    confirmed_by = Column(Integer, ForeignKey("users.id"))
+    confirmed_at = Column(DateTime(timezone=True))
+    needs_confirmation = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 

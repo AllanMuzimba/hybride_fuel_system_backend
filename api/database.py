@@ -16,7 +16,12 @@ DATABASE_URL = os.getenv(
     "postgresql+psycopg2://fuel_user:fuel_pass@localhost:5432/fuel_system",
 )
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    pool_size=3,
+    max_overflow=2,
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 

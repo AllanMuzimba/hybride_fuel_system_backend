@@ -1,41 +1,48 @@
-# Deploy with Render and Supabase
+# Deploy with Render and Layerbase
 
 The backend and Flutter frontend live in separate GitHub repositories. The
 `render.yaml` Blueprint in this backend repository creates a free Render web
 service for FastAPI and a free Render static site for the Flutter web build.
 Render deploys both from GitHub; the Render CLI is optional.
 
-Use Supabase Postgres for data you intend to keep. Render's free Postgres
-database expires after 30 days. Supabase Free has a 500 MB database limit and
-can pause after a period of low activity, so arrange independent backups and
-consider a paid plan for a real station.
+The `hybrid_fuel` database already exists on Layerbase Cloud in its US East
+region, running stable PostgreSQL 18. Its full `schema.sql` was applied on
+2026-10-23. The Render API is set to Virginia, close to that database. The free Layerbase plan has no trial expiry, but idle databases
+sleep and can eventually be archived. Free has one manual backup slot and no
+scheduled backups, so arrange independent exports. Layerbase describes Free
+as an option for development and early-stage products, with paid plans for
+products earning recurring production revenue.
 
-## 1. Create the Postgres database
+## 1. Connect to the Postgres database
 
-Create a Supabase project and copy its **Session pooler** connection string
-(port 5432) from **Connect**. The Render service needs the database password.
-Keep the connection string secret. Use the SQLAlchemy form for `DATABASE_URL`:
+Open `hybrid_fuel` in Layerbase Cloud and copy the **pooled PostgreSQL**
+connection string from Quick Connect. Keep it secret. The API's `DATABASE_URL`
+uses the SQLAlchemy driver prefix and requires TLS:
 
 ```text
-postgresql+psycopg2://postgres.PROJECT_REF:PASSWORD@POOLER_HOST:5432/postgres?sslmode=require
+postgresql+psycopg2://USER:PASSWORD@POOLER_HOST/hybrid_fuel?sslmode=require
 ```
 
-If the password contains special URL characters, URL-encode them. The direct
-Supabase connection requires IPv6; the session pooler works for Render's
-long-running Python process.
+Replace only `postgresql://` in Layerbase's URL with
+`postgresql+psycopg2://`; retain its real host, credentials, database, and
+query string. If a password is written into a URL by hand, URL-encode special
+characters. Use the **direct** connection string for schema migrations and
+exports. The application uses the pooled URL and limits its own connection
+pool to leave room under Layerbase Free's 20-connection limit.
 
-From this repository, initialize a **new, empty** database with the full
-schema, then create the first account interactively:
+The schema is already initialized. To create the first company, branch, and
+developer login, run this script interactively with the private API URL set
+in your environment or a local `.env` file (which Git ignores):
 
 ```bash
-psql 'postgresql://postgres.PROJECT_REF:PASSWORD@POOLER_HOST:5432/postgres?sslmode=require' -v ON_ERROR_STOP=1 -f schema.sql
-DATABASE_URL='postgresql+psycopg2://postgres.PROJECT_REF:PASSWORD@POOLER_HOST:5432/postgres?sslmode=require' python create_first_company.py
+python create_first_company.py
 ```
 
-Use your actual connection details without committing them. `schema.sql`
-already contains the offline transaction request IDs. For an **existing**
-database, apply pending SQL files in `migrations/` in order instead of running
-the full schema again. Do not use `seed_demo.py` for a live installation.
+For a new, empty database only, apply `schema.sql` with a PostgreSQL client
+using Layerbase's direct URL. The schema already contains the offline
+transaction request IDs. For an existing database, apply pending SQL files in
+`migrations/` in order. Do not run the full schema twice or use
+`seed_demo.py` for a live installation.
 
 ## 2. Deploy the GitHub repositories
 
@@ -50,7 +57,7 @@ the full schema again. Do not use `seed_demo.py` for a live installation.
 
    | Service | Variable | Value |
    | --- | --- | --- |
-   | API | `DATABASE_URL` | Supabase session pooler SQLAlchemy URL from step 1 |
+   | API | `DATABASE_URL` | Layerbase pooled SQLAlchemy URL from step 1 |
    | API | `CORS_ORIGINS` | Exact web origin, e.g. `https://hybrid-fuel-web.onrender.com`, without trailing slash |
    | Web | `API_BASE_URL` | Exact API origin, e.g. `https://hybrid-fuel-api.onrender.com`, without trailing slash |
 
@@ -87,8 +94,8 @@ variable, the job skips. GitHub scheduled jobs can be delayed or missed, and
 GitHub may disable schedules in inactive public repositories; the ping does
 not guarantee zero cold starts. Render's free web service sleeps after 15
 minutes without traffic and has a monthly free instance-hour allowance. The
-database check also generates periodic activity for Supabase, but it is not
-a substitute for backups or a paid always-on service.
+database check also generates activity for Layerbase. Neither scheduled
+workflow nor health check is a substitute for backups or paid availability.
 
 ## Render CLI (optional)
 

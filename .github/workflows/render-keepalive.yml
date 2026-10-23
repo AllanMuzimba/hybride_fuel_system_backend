@@ -1,9 +1,11 @@
-name: Keep Render and Layerbase warm
+name: Check Render and keep Layerbase active
 
 on:
   schedule:
-    # Offset from the top of the hour to reduce GitHub scheduler delays.
+    # Layerbase check every ten minutes; this does not wake Render.
     - cron: '7,17,27,37,47,57 * * * *'
+    # One daily API health check lets Render sleep between real requests.
+    - cron: '7 5 * * *'
   workflow_dispatch:
 
 permissions: {}
@@ -16,7 +18,7 @@ jobs:
       HEALTH_URL: ${{ vars.RENDER_HEALTH_URL }}
     steps:
       - name: Ping Render API
-        if: env.HEALTH_URL != ''
+        if: env.HEALTH_URL != '' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '7 5 * * *')
         run: curl --fail --show-error --silent --max-time 120 "$HEALTH_URL"
       - name: Ensure PostgreSQL client is available
         run: |

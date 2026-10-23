@@ -87,7 +87,7 @@ For an installed mobile app, build with the same public API address:
 flutter build apk --dart-define=API_BASE_URL=https://YOUR-API.onrender.com
 ```
 
-## 3. GitHub keepalive
+## 3. External health checks
 
 In the **backend** GitHub repository, set the Actions variable
 `RENDER_HEALTH_URL` to the deployed API health URL:
@@ -100,22 +100,32 @@ Also set the Actions **secret** `LAYERBASE_CONNECTION_STRING` to Layerbase's
 PostgreSQL connection URL, including `sslmode=require`. The secret stays in
 GitHub Actions settings and must never be committed to this repository.
 
-The scheduled workflow in `.github/workflows/render-keepalive.yml` runs every
-ten minutes and can also be started manually. One step requests the Render API
-health endpoint; another runs `SELECT 1` directly on Layerbase. Without the
-Render URL variable, the Render step skips. The Layerbase step fails if its
-secret is missing. GitHub scheduled jobs can be delayed or missed, and GitHub
-may disable schedules in inactive public repositories. This does not
-guarantee zero cold starts. Render's free web service sleeps after 15 minutes
-without traffic and has a monthly free instance-hour allowance. The checks
-are not a substitute for backups or paid availability.
+The workflow in `.github/workflows/render-keepalive.yml` queries Layerbase
+directly every ten minutes. It checks the Render API once daily at 05:07 UTC
+and on manual dispatch. The Layerbase query does not wake Render. A separate
+external check can be created on cron-job.org with these settings:
 
-While the FastAPI process runs on Render, a background task also calls its
-public `/health?check_database=true` URL every ten minutes after an initial
-60-second delay. Render provides that URL through `RENDER_EXTERNAL_URL`.
-`/ping` is available as a simple external probe. An in-process task cannot
-wake the service after Render has already stopped it, so the GitHub workflow
-remains the external wake-up check.
+| Setting | Value |
+| --- | --- |
+| Title | `Hybrid Fuel API health` |
+| URL | `https://hybrid-fuel-api.onrender.com/health?check_database=true` |
+| Method | `GET` |
+| Schedule | Daily at 17:07 UTC |
+| Expected response | HTTP 200 and `{"status":"ok"}` |
+
+The cron-job.org job requires an account and must be created there. It is a
+second external check, twelve hours apart from the GitHub API check; it is
+not configured inside the Python process. `/ping` remains available as a
+simple probe, but `/health?check_database=true` also verifies Layerbase.
+
+Any external request, including GitHub and cron-job.org, wakes a sleeping
+Render web service and keeps it running for at least its 15-minute idle
+period. Checking every ten minutes would keep it active continuously and
+consume its free instance hours. The daily checks above let it sleep between
+real user traffic. Expect a cold start on the next request after sleep.
+GitHub scheduled jobs can be delayed or missed and may be disabled in an
+inactive public repository. The checks are not a substitute for backups or
+paid availability.
 
 ## Render CLI (optional)
 

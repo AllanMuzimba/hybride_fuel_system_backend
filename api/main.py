@@ -4,12 +4,7 @@ Run with: uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
 
 Interactive docs (great for wiring up Flutter): http://localhost:8000/docs
 """
-import asyncio
-from contextlib import asynccontextmanager, suppress
-import logging
 import os
-
-import httpx
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,44 +26,10 @@ from .routers import (
     reports_router,
 )
 
-logger = logging.getLogger(__name__)
-
-
-async def keep_alive_loop(public_url: str) -> None:
-    """Keep the Render API and its Layerbase connection active while running."""
-    health_url = f"{public_url.rstrip('/')}/health?check_database=true"
-    await asyncio.sleep(60)
-    async with httpx.AsyncClient(timeout=30) as client:
-        while True:
-            try:
-                response = await client.get(health_url)
-                response.raise_for_status()
-                logger.info("Keepalive health check succeeded")
-            except (httpx.HTTPError, httpx.InvalidURL):
-                logger.warning("Keepalive health check failed", exc_info=True)
-            await asyncio.sleep(600)
-
-
-@asynccontextmanager
-async def lifespan(_app: FastAPI):
-    public_url = os.getenv("RENDER_EXTERNAL_URL", "")
-    task = None
-    if public_url.startswith("https://"):
-        task = asyncio.create_task(keep_alive_loop(public_url))
-    try:
-        yield
-    finally:
-        if task is not None:
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-
-
 app = FastAPI(
     title="Fuel Management System API",
     description="Backend for supplier receipts, fuel sales, customer accounts and reporting.",
     version="1.0.0",
-    lifespan=lifespan,
 )
 
 # Set CORS_ORIGINS to the deployed Flutter site's origin. Native mobile apps

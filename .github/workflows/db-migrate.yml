@@ -1,0 +1,55 @@
+name: Apply database migration
+
+on:
+  workflow_dispatch:
+    inputs:
+      file:
+        description: Migration file under migrations/
+        required: true
+        default: 011_accounts_billing.sql
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PG_CONN_STRING: ${{ secrets.LAYERBASE_CONNECTION_STRING }}
+      MIGRATION_FILE: ${{ inputs.file }}
+      PGCONNECT_TIMEOUT: '20'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Ensure PostgreSQL client is available
+        run: |
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y postgresql-client
+          fi
+
+      - name: Validate inputs
+        run: |
+          if [ -z "$PG_CONN_STRING" ]; then
+            echo 'Missing LAYERBASE_CONNECTION_STRING repository secret' >&2
+            exit 1
+          fi
+          case "$MIGRATION_FILE" in
+            *.sql) ;;
+            *) echo 'Migration file must end in .sql' >&2; exit 1 ;;
+          esac
+          if [ ! -f "migrations/$MIGRATION_FILE" ]; then
+            echo "migrations/$MIGRATION_FILE does not exist" >&2
+            exit 1
+          fi
+
+      - name: Apply migration
+        timeout 120s psql "$PG_CONN_STRING" -X -v ON_ERROR_STOP=1 -q -f "migrations/$MIGRATION_FILE"
+
+      - name: Verify migrated objects
+        run: |
+          timeout 60s psql "$PG_CONN_STRING" -X -v ON_ERROR_STOP=1 -Atq \
+            -c "SELECT 'password_reset_tokens=' || coalesce(to_regclass('public.password_reset_tokens')::text, 'missing')" \
+            -c "SELECT 'company_invoices=' || coalesce(to_regclass('public.company_invoices')::text, 'missing')"

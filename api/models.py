@@ -253,6 +253,22 @@ class Shift(Base):
     notes = Column(Text)
 
 
+class ShiftFuelReading(Base):
+    """Automatic and physical fuel measurements captured when a shift opens
+    and closes. One row per fuel type makes each variance auditable."""
+    __tablename__ = "shift_fuel_readings"
+    __table_args__ = (UniqueConstraint("shift_id", "fuel_type_id"),)
+    id = Column(Integer, primary_key=True)
+    shift_id = Column(Integer, ForeignKey("shifts.id", ondelete="CASCADE"), nullable=False)
+    fuel_type_id = Column(Integer, ForeignKey("fuel_types.id"), nullable=False)
+    opening_system_volume = Column(Numeric(14, 3), nullable=False, default=0)
+    opening_manual_volume = Column(Numeric(14, 3))
+    opening_dip_cm = Column(Numeric(8, 2))
+    closing_system_volume = Column(Numeric(14, 3))
+    closing_manual_volume = Column(Numeric(14, 3))
+    closing_dip_cm = Column(Numeric(8, 2))
+
+
 class ShiftAttendance(Base):
     """A user signing in to a shift — the attendance trail shown on the
     Shifts page (who was on the forecourt, when they joined/left)."""

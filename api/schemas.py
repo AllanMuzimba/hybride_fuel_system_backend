@@ -558,6 +558,25 @@ EntryMode = Literal["realtime", "end_of_shift"]
 ShiftStatus = Literal["open", "closed"]
 
 
+class ShiftFuelReadingInput(BaseModel):
+    fuel_type_id: int
+    manual_volume: Optional[float] = Field(default=None, ge=0)
+    dip_cm: Optional[float] = Field(default=None, ge=0)
+
+
+class ShiftFuelReadingOut(BaseModel):
+    fuel_type_id: int
+    fuel_name: str
+    opening_system_volume: float
+    opening_manual_volume: Optional[float] = None
+    opening_dip_cm: Optional[float] = None
+    opening_variance: Optional[float] = None
+    closing_system_volume: Optional[float] = None
+    closing_manual_volume: Optional[float] = None
+    closing_dip_cm: Optional[float] = None
+    closing_variance: Optional[float] = None
+
+
 class ShiftCreate(BaseModel):
     branch_id: int
     shift_date: Optional[date] = None          # defaults to today
@@ -569,6 +588,11 @@ class ShiftCreate(BaseModel):
     # shift, branches that sell live inherit 'realtime'.
     entry_mode: Optional[EntryMode] = None
     notes: Optional[str] = None
+    opening_readings: List[ShiftFuelReadingInput] = Field(default_factory=list)
+
+
+class ShiftCloseCreate(BaseModel):
+    closing_readings: List[ShiftFuelReadingInput] = Field(min_length=1)
 
 
 class ShiftModeUpdate(BaseModel):
@@ -615,6 +639,7 @@ class ShiftOut(BaseModel):
     mobile_money_amount: float = 0.0
     account_amount: float = 0.0
     current_user_joined: bool = False
+    fuel_readings: List[ShiftFuelReadingOut] = Field(default_factory=list)
 
 
 class ShiftVolumeEntry(BaseModel):

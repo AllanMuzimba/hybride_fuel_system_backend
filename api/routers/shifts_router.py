@@ -310,6 +310,38 @@ def build_shift_out(
     opener = db.query(models.User).get(shift.opened_by)
     people = attendance.get(shift.id, [])
     t = totals.get(shift.id, {})
+    reading_rows = (
+        db.query(models.ShiftFuelReading, models.FuelType.name)
+        .join(models.FuelType, models.FuelType.id == models.ShiftFuelReading.fuel_type_id)
+        .filter(models.ShiftFuelReading.shift_id == shift.id)
+        .order_by(models.FuelType.name)
+        .all()
+    )
+    fuel_readings = []
+    for reading, fuel_name in reading_rows:
+        opening_manual = (float(reading.opening_manual_volume)
+                          if reading.opening_manual_volume is not None else None)
+        closing_manual = (float(reading.closing_manual_volume)
+                          if reading.closing_manual_volume is not None else None)
+        opening_system = float(reading.opening_system_volume)
+        closing_system = (float(reading.closing_system_volume)
+                          if reading.closing_system_volume is not None else None)
+        fuel_readings.append(schemas.ShiftFuelReadingOut(
+            fuel_type_id=reading.fuel_type_id,
+            fuel_name=fuel_name,
+            opening_system_volume=opening_system,
+            opening_manual_volume=opening_manual,
+            opening_dip_cm=(float(reading.opening_dip_cm)
+                            if reading.opening_dip_cm is not None else None),
+            opening_variance=(opening_manual - opening_system
+                              if opening_manual is not None else None),
+            closing_system_volume=closing_system,
+            closing_manual_volume=closing_manual,
+            closing_dip_cm=(float(reading.closing_dip_cm)
+                            if reading.closing_dip_cm is not None else None),
+            closing_variance=(closing_manual - closing_system
+                              if closing_manual is not None and closing_system is not None else None),
+        ))
     return schemas.ShiftOut(
         id=shift.id,
         company_id=shift.company_id,
@@ -340,6 +372,7 @@ def build_shift_out(
         mobile_money_amount=t.get("mobile_money_amount", 0.0),
         account_amount=t.get("account_amount", 0.0),
         current_user_joined=any(p.user_id == current_user_id and p.left_at is None for p in people),
+        fuel_readings=fuel_readings,
     )
 
 
@@ -465,6 +498,32 @@ def open_shift(
     )
     db.add(shift)
     db.flush()
+    supplied = {row.fuel_type_id: row for row in payload.opening_readings}
+    if len(supplied) != len(payload.opening_readings):
+        raise HTTPException(status_code=400, detail="Each opening fuel type must appear once")
+    stock_rows = db.query(models.FuelStock).filter(
+        models.FuelStock.branch_id == payload.branch_id).all()
+    for stock in stock_rows:
+        entered = supplied.get(stock.fuel_type_id)
+        previous = (
+            db.query(models.ShiftFuelReading.closing_manual_volume)
+            .join(models.Shift, models.Shift.id == models.ShiftFuelReading.shift_id)
+            .filter(
+                models.Shift.branch_id == payload.branch_id,
+                models.ShiftFuelReading.fuel_type_id == stock.fuel_type_id,
+                models.ShiftFuelReading.closing_manual_volume.isnot(None),
+            )
+            .order_by(models.Shift.closed_at.desc(), models.Shift.id.desc())
+            .first()
+        )
+        automatic = previous[0] if previous else stock.current_volume
+        db.add(models.ShiftFuelReading(
+            shift_id=shift.id,
+            fuel_type_id=stock.fuel_type_id,
+            opening_system_volume=automatic,
+            opening_manual_volume=entered.manual_volume if entered else None,
+            opening_dip_cm=entered.dip_cm if entered else None,
+        ))
     db.add(models.ShiftAttendance(shift_id=shift.id, user_id=current_user.id))
     try:
         db.commit()
@@ -527,6 +586,7 @@ def leave_shift(
 @router.post("/{shift_id}/close", response_model=schemas.ShiftOut)
 def close_shift(
     shift_id: int,
+    payload: schemas.ShiftCloseCreate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user),
 ):
@@ -540,6 +600,33 @@ def close_shift(
             status_code=403,
             detail="Only the person who opened the shift, a supervisor or a manager can close it",
         )
+
+    readings = db.query(models.ShiftFuelReading).filter(
+        models.ShiftFuelReading.shift_id == shift.id).all()
+    supplied = {row.fuel_type_id: row for row in payload.closing_readings}
+    if len(supplied) != len(payload.closing_readings):
+        raise HTTPException(status_code=400, detail="Each closing fuel type must appear once")
+    expected_ids = {row.fuel_type_id for row in readings}
+    if set(supplied) != expected_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="Enter closing volume and dip readings for every fuel in this shift",
+        )
+    stock = {
+        row.fuel_type_id: row.current_volume
+        for row in db.query(models.FuelStock).filter(
+            models.FuelStock.branch_id == shift.branch_id).all()
+    }
+    for reading in readings:
+        entered = supplied[reading.fuel_type_id]
+        if entered.manual_volume is None or entered.dip_cm is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Closing volume and dip reading are both required",
+            )
+        reading.closing_system_volume = stock.get(reading.fuel_type_id, 0)
+        reading.closing_manual_volume = entered.manual_volume
+        reading.closing_dip_cm = entered.dip_cm
 
     shift.status = "closed"
     shift.closed_by = current_user.id

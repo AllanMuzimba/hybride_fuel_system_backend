@@ -337,6 +337,20 @@ CREATE UNIQUE INDEX uq_shifts_open_branch ON shifts(branch_id) WHERE status = 'o
 CREATE INDEX idx_shifts_company ON shifts(company_id);
 CREATE INDEX idx_shifts_branch  ON shifts(branch_id, shift_date DESC);
 
+CREATE TABLE shift_fuel_readings (
+    id SERIAL PRIMARY KEY,
+    shift_id INT NOT NULL REFERENCES shifts(id) ON DELETE CASCADE,
+    fuel_type_id INT NOT NULL REFERENCES fuel_types(id),
+    opening_system_volume NUMERIC(14,3) NOT NULL DEFAULT 0,
+    opening_manual_volume NUMERIC(14,3),
+    opening_dip_cm NUMERIC(8,2),
+    closing_system_volume NUMERIC(14,3),
+    closing_manual_volume NUMERIC(14,3),
+    closing_dip_cm NUMERIC(8,2),
+    UNIQUE (shift_id, fuel_type_id)
+);
+CREATE INDEX idx_shift_fuel_readings_shift ON shift_fuel_readings(shift_id);
+
 -- Who signed in for the shift: attendance details kept per person so the
 -- shift page can show exactly who was on the forecourt and when.
 CREATE TABLE shift_attendance (

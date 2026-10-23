@@ -113,9 +113,11 @@ external check can be created on cron-job.org with these settings:
 | Schedule | Daily at 17:07 UTC |
 | Expected response | HTTP 200 and `{"status":"ok"}` |
 
-The cron-job.org job requires an account and must be created there. It is a
-second external check, twelve hours apart from the GitHub API check; it is
-not configured inside the Python process. `/ping` remains available as a
+The cron-job.org job is enabled in the owner's account as job `8705779`.
+It is a second external check, twelve hours apart from the GitHub API check;
+it is not configured inside the Python process. The API key used to manage
+the job is stored locally at `.local-secrets/cron-job-api-key` in the frontend
+workspace, outside Flutter assets and Git. `/ping` remains available as a
 simple probe, but `/health?check_database=true` also verifies Layerbase.
 
 Any external request, including GitHub and cron-job.org, wakes a sleeping

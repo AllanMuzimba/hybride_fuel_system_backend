@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
@@ -119,10 +119,25 @@ def record_customer_payment(
     customer = db.query(models.Customer).get(payload.customer_id)
     if not customer or customer.company_id != current_user.company_id:
         raise HTTPException(status_code=404, detail="Customer not found")
+    if payload.client_request_id:
+        existing = db.query(models.CustomerTransaction).filter(
+            models.CustomerTransaction.client_request_id == payload.client_request_id,
+            models.CustomerTransaction.txn_type == "payment",
+        ).first()
+        if existing:
+            if existing.recorded_by != current_user.id or existing.customer_id != payload.customer_id:
+                raise HTTPException(status_code=409, detail="Payment request ID belongs to another payment")
+            return existing
     if not customer.is_active:
         raise HTTPException(status_code=409, detail="Customer account is inactive")
     if payload.amount <= 0:
         raise HTTPException(status_code=400, detail="Payment amount must be positive")
+    if payload.recorded_at is not None:
+        if payload.recorded_at.tzinfo is None:
+            raise HTTPException(status_code=422, detail="recorded_at needs a timezone")
+        now = datetime.now(timezone.utc)
+        if payload.recorded_at > now + timedelta(minutes=5):
+            raise HTTPException(status_code=409, detail="Offline payment time is outside the allowed window")
 
     branch_id = payload.branch_id
     if branch_id is not None:
@@ -133,6 +148,8 @@ def record_customer_payment(
         raise HTTPException(status_code=400, detail="branch_id is required (your account isn't tied to a single branch)")
 
     txn = models.CustomerTransaction(
+        client_request_id=payload.client_request_id,
+        transaction_date=payload.recorded_at,
         customer_id=payload.customer_id,
         branch_id=branch_id,
         txn_type="payment",

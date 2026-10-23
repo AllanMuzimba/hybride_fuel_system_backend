@@ -189,6 +189,7 @@ CREATE INDEX idx_dip_cal_branch ON tank_dip_calibrations(branch_id, fuel_type_id
 -- ---------------------------------------------------------------------
 CREATE TABLE fuel_receipts (
     id                  SERIAL PRIMARY KEY,
+    client_request_id   VARCHAR(64) UNIQUE,
     branch_id           INT NOT NULL REFERENCES company_branches(id),
     supplier_id         INT NOT NULL REFERENCES suppliers(id),
     fuel_type_id        INT NOT NULL REFERENCES fuel_types(id),
@@ -213,6 +214,7 @@ CREATE INDEX idx_receipts_invoice  ON fuel_receipts(invoice_reference);
 -- Payments made against a supplier invoice (a receipt can be paid in parts)
 CREATE TABLE supplier_payments (
     id              SERIAL PRIMARY KEY,
+    client_request_id VARCHAR(64) UNIQUE,
     receipt_id      INT NOT NULL REFERENCES fuel_receipts(id),
     amount          NUMERIC(14,2) NOT NULL CHECK (amount > 0),
     payment_date    DATE NOT NULL DEFAULT CURRENT_DATE,
@@ -337,6 +339,7 @@ CREATE INDEX idx_sales_shift     ON sales(shift_id);
 --                  adjustment = +/- as needed
 CREATE TABLE customer_transactions (
     id                  SERIAL PRIMARY KEY,
+    client_request_id   VARCHAR(64) UNIQUE,
     branch_id           INT NOT NULL REFERENCES company_branches(id),  -- branch where it happened
     customer_id         INT NOT NULL REFERENCES customers(id),
     txn_type            customer_txn_type NOT NULL,
@@ -367,6 +370,7 @@ CREATE TABLE expense_categories (
 
 CREATE TABLE expenses (
     id                  SERIAL PRIMARY KEY,
+    client_request_id   VARCHAR(64) UNIQUE,
     company_id          INT NOT NULL REFERENCES companies(id),
     branch_id           INT REFERENCES company_branches(id),  -- NULL = company-wide / head-office expense
     name                VARCHAR(150) NOT NULL,

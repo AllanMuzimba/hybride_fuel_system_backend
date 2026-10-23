@@ -81,11 +81,20 @@ def record_expense(
     category = db.query(models.ExpenseCategory).get(payload.category_id)
     if not category or category.company_id != current_user.company_id:
         raise HTTPException(status_code=404, detail="Expense category not found")
+    if payload.client_request_id:
+        existing = db.query(models.Expense).filter(
+            models.Expense.client_request_id == payload.client_request_id
+        ).first()
+        if existing:
+            if existing.recorded_by != current_user.id or existing.company_id != current_user.company_id:
+                raise HTTPException(status_code=409, detail="Expense request ID belongs to another expense")
+            return existing
 
     if payload.branch_id is not None:
         auth.verify_branch_access(current_user, payload.branch_id, db)
 
     expense = models.Expense(
+        client_request_id=payload.client_request_id,
         company_id=current_user.company_id,
         branch_id=payload.branch_id,
         name=payload.name,

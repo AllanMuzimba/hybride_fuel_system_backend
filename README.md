@@ -120,10 +120,11 @@ uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
 
 Browse to `http://localhost:8000/docs` for interactive Swagger docs.
 
-For an existing database, apply `migrations/009_offline_sales.sql` before
-connecting updated Flutter clients. Offline sale uploads include their original
-shift, UTC sale time, and `client_request_id`. The unique request ID makes a
-retry return the existing sale after a lost response. A sale can be uploaded
+For an existing database, apply `migrations/009_offline_sales.sql` and
+`migrations/010_offline_transactions.sql` before connecting updated Flutter
+clients. Offline sale uploads include their original shift, UTC sale time, and
+`client_request_id`. The other financial transactions also use request IDs.
+Retries return existing records after lost responses. A sale can be uploaded
 against a closed shift only if its recorded time falls within that shift and
 the seller's attendance. Stock and credit rules still apply when it reaches
 the server.

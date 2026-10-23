@@ -246,6 +246,7 @@ class CompanyStockTotalOut(BaseModel):
 
 # --------------------------------------------------------- fuel receipts ----
 class FuelReceiptCreate(BaseModel):
+    client_request_id: Optional[str] = Field(default=None, max_length=64)
     branch_id: int
     supplier_id: int
     fuel_type_id: int
@@ -312,6 +313,7 @@ class DipCalibrationOut(BaseModel):
 
 
 class SupplierPaymentCreate(BaseModel):
+    client_request_id: Optional[str] = Field(default=None, max_length=64)
     receipt_id: int
     amount: float
     payment_date: Optional[date] = None
@@ -371,6 +373,8 @@ class CustomerOut(BaseModel):
 class CustomerPaymentCreate(BaseModel):
     """A cash/EFT payment received from a credit customer, reducing their balance."""
     customer_id: int
+    client_request_id: Optional[str] = Field(default=None, max_length=64)
+    recorded_at: Optional[datetime] = None
     branch_id: Optional[int] = None  # which branch's till received the cash
     amount: float
     notes: Optional[str] = None
@@ -559,6 +563,7 @@ class ExpenseCategoryOut(BaseModel):
 
 
 class ExpenseCreate(BaseModel):
+    client_request_id: Optional[str] = Field(default=None, max_length=64)
     name: str
     category_id: int
     amount: float

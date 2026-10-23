@@ -144,6 +144,7 @@ class TankDipCalibration(Base):
 class FuelReceipt(Base):
     __tablename__ = "fuel_receipts"
     id = Column(Integer, primary_key=True)
+    client_request_id = Column(String(64), unique=True)
     branch_id = Column(Integer, ForeignKey("company_branches.id"), nullable=False)
     supplier_id = Column(Integer, ForeignKey("suppliers.id"), nullable=False)
     fuel_type_id = Column(Integer, ForeignKey("fuel_types.id"), nullable=False)
@@ -164,6 +165,7 @@ class FuelReceipt(Base):
 class SupplierPayment(Base):
     __tablename__ = "supplier_payments"
     id = Column(Integer, primary_key=True)
+    client_request_id = Column(String(64), unique=True)
     receipt_id = Column(Integer, ForeignKey("fuel_receipts.id"), nullable=False)
     amount = Column(Numeric(14, 2), nullable=False)
     payment_date = Column(Date, nullable=False)
@@ -254,6 +256,7 @@ class Sale(Base):
 class CustomerTransaction(Base):
     __tablename__ = "customer_transactions"
     id = Column(Integer, primary_key=True)
+    client_request_id = Column(String(64), unique=True)
     branch_id = Column(Integer, ForeignKey("company_branches.id"), nullable=False)
     customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False)
     txn_type = Column(Enum(*CUSTOMER_TXN_TYPES, name="customer_txn_type"), nullable=False)
@@ -278,6 +281,7 @@ class ExpenseCategory(Base):
 class Expense(Base):
     __tablename__ = "expenses"
     id = Column(Integer, primary_key=True)
+    client_request_id = Column(String(64), unique=True)
     company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)
     branch_id = Column(Integer, ForeignKey("company_branches.id"))  # NULL = company-wide expense
     name = Column(String(150), nullable=False)

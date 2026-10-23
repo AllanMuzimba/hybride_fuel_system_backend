@@ -83,7 +83,7 @@ def record_sale(
             raise HTTPException(status_code=422, detail="Offline sale needs a timezone-aware recorded_at")
         recorded_at = payload.recorded_at.astimezone(timezone.utc)
         now = datetime.now(timezone.utc)
-        if recorded_at > now + timedelta(minutes=5) or recorded_at < now - timedelta(days=30):
+        if recorded_at > now + timedelta(minutes=5):
             raise HTTPException(status_code=409, detail="Offline sale time is outside the allowed window")
         if recorded_at < shift.opened_at or (shift.closed_at and recorded_at > shift.closed_at):
             raise HTTPException(status_code=409, detail="Offline sale was outside this shift")

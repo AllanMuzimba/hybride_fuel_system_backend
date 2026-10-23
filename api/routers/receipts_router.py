@@ -29,6 +29,14 @@ def receive_fuel(
     (fn_dip_to_volume(after) − fn_dip_to_volume(before)) and takes
     precedence over the submitted volume."""
     auth.verify_branch_access(current_user, payload.branch_id, db)
+    if payload.client_request_id:
+        existing = db.query(models.FuelReceipt).filter(
+            models.FuelReceipt.client_request_id == payload.client_request_id
+        ).first()
+        if existing:
+            if existing.received_by != current_user.id or existing.branch_id != payload.branch_id:
+                raise HTTPException(status_code=409, detail="Receipt request ID belongs to another receipt")
+            return existing
 
     supplier = db.query(models.Supplier).get(payload.supplier_id)
     if not supplier or supplier.company_id != current_user.company_id:
@@ -52,6 +60,7 @@ def receive_fuel(
         raise HTTPException(status_code=400, detail="Volume received must be greater than zero")
 
     receipt = models.FuelReceipt(
+        client_request_id=payload.client_request_id,
         branch_id=payload.branch_id,
         supplier_id=payload.supplier_id,
         fuel_type_id=payload.fuel_type_id,
@@ -179,10 +188,19 @@ def pay_supplier_invoice(
     if not receipt:
         raise HTTPException(status_code=404, detail="Receipt not found")
     auth.verify_branch_access(current_user, receipt.branch_id, db)
+    if payload.client_request_id:
+        existing = db.query(models.SupplierPayment).filter(
+            models.SupplierPayment.client_request_id == payload.client_request_id
+        ).first()
+        if existing:
+            if existing.paid_by != current_user.id or existing.receipt_id != payload.receipt_id:
+                raise HTTPException(status_code=409, detail="Payment request ID belongs to another payment")
+            return existing
     if payload.amount <= 0 or payload.amount > float(receipt.total_cost - receipt.amount_paid):
         raise HTTPException(status_code=400, detail="Payment must be positive and no greater than the invoice balance")
 
     payment = models.SupplierPayment(
+        client_request_id=payload.client_request_id,
         receipt_id=payload.receipt_id,
         amount=payload.amount,
         payment_date=payload.payment_date or date.today(),

@@ -76,7 +76,14 @@ def settle_shift_volumes(
         price = db.query(models.BranchFuelPrice).get((shift.branch_id, fuel_id))
         if not fuel or not price:
             raise HTTPException(status_code=400, detail=f"Fuel {fuel_id} has no branch price")
-        total = Decimal(str(row.total_volume))
+        if row.opening_volume is not None and row.closing_volume is not None:
+            total = Decimal(str(row.opening_volume)) - Decimal(str(row.closing_volume))
+        elif row.total_volume is not None:
+            total = Decimal(str(row.total_volume))
+        else:
+            raise HTTPException(status_code=400, detail=f"Enter opening and closing volume for {fuel.name}")
+        if total <= 0:
+            raise HTTPException(status_code=400, detail=f"Closing volume must be below opening volume for {fuel.name}")
         card = Decimal(str(row.card_volume))
         mobile = Decimal(str(row.mobile_money_volume))
         account = sum((Decimal(str(p.volume)) for p in purchases.get(fuel_id, [])), Decimal(0))
@@ -97,6 +104,33 @@ def settle_shift_volumes(
                 sale_date=sale_date, entry_source="shift_close",
                 notes="End of shift settlement",
             ))
+        reading = db.query(models.ShiftFuelReading).filter(
+            models.ShiftFuelReading.shift_id == shift.id,
+            models.ShiftFuelReading.fuel_type_id == fuel_id,
+        ).first()
+        if reading:
+            if row.opening_volume is not None:
+                reading.opening_manual_volume = row.opening_volume
+            reading.closing_system_volume = max(
+                Decimal(0), reading.opening_system_volume - total)
+            reading.closing_manual_volume = row.closing_volume
+            reading.closing_dip_cm = row.closing_dip_cm
+    if payload.cash_received is not None:
+        db.flush()
+        system_cash = (
+            db.query(func.coalesce(func.sum(models.Sale.total_amount), 0))
+            .filter(models.Sale.shift_id == shift.id, models.Sale.payment_method == "cash")
+            .scalar()
+        )
+        shift.system_cash_amount = system_cash
+        shift.counted_cash_amount = payload.cash_received
+        shift.status = "closed"
+        shift.closed_by = current_user.id
+        shift.closed_at = datetime.now().astimezone()
+        db.query(models.ShiftAttendance).filter(
+            models.ShiftAttendance.shift_id == shift.id,
+            models.ShiftAttendance.left_at.is_(None),
+        ).update({models.ShiftAttendance.left_at: shift.closed_at}, synchronize_session=False)
     try:
         db.commit()
     except DBAPIError as exc:
@@ -255,6 +289,12 @@ def _attendance_by_shift(db: Session, shift_ids: List[int]) -> Dict[int, List[sc
                 role=user.role,
                 joined_at=att.joined_at,
                 left_at=att.left_at,
+                system_cash_amount=(float(att.system_cash_amount)
+                                    if att.system_cash_amount is not None else None),
+                counted_cash_amount=(float(att.counted_cash_amount)
+                                     if att.counted_cash_amount is not None else None),
+                cash_variance=(float(att.counted_cash_amount - att.system_cash_amount)
+                               if att.counted_cash_amount is not None and att.system_cash_amount is not None else None),
             )
         )
     return out
@@ -373,6 +413,12 @@ def build_shift_out(
         account_amount=t.get("account_amount", 0.0),
         current_user_joined=any(p.user_id == current_user_id and p.left_at is None for p in people),
         fuel_readings=fuel_readings,
+        system_cash_amount=(float(shift.system_cash_amount)
+                            if shift.system_cash_amount is not None else None),
+        counted_cash_amount=(float(shift.counted_cash_amount)
+                             if shift.counted_cash_amount is not None else None),
+        cash_variance=(float(shift.counted_cash_amount - shift.system_cash_amount)
+                       if shift.counted_cash_amount is not None and shift.system_cash_amount is not None else None),
     )
 
 
@@ -565,6 +611,7 @@ def join_shift(
 @router.post("/{shift_id}/leave", response_model=schemas.ShiftOut)
 def leave_shift(
     shift_id: int,
+    payload: schemas.ShiftLeaveCreate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user),
 ):
@@ -578,6 +625,20 @@ def leave_shift(
     if row is None:
         raise HTTPException(status_code=400, detail="You are not signed in for this shift")
     if row.left_at is None:
+        if shift.entry_mode == "realtime":
+            if payload.cash_received is None:
+                raise HTTPException(status_code=400, detail="Enter counted cash before leaving this shift")
+            system_cash = (
+                db.query(func.coalesce(func.sum(models.Sale.total_amount), 0))
+                .filter(
+                    models.Sale.shift_id == shift.id,
+                    models.Sale.served_by == current_user.id,
+                    models.Sale.payment_method == "cash",
+                )
+                .scalar()
+            )
+            row.system_cash_amount = system_cash
+            row.counted_cash_amount = payload.cash_received
         row.left_at = datetime.now().astimezone()
         db.commit()
     return build_shift_out(db, shift, current_user.id)
@@ -619,14 +680,22 @@ def close_shift(
     }
     for reading in readings:
         entered = supplied[reading.fuel_type_id]
-        if entered.manual_volume is None or entered.dip_cm is None:
+        if entered.manual_volume is None:
             raise HTTPException(
                 status_code=400,
-                detail="Closing volume and dip reading are both required",
+                detail="Closing volume is required for every fuel",
             )
         reading.closing_system_volume = stock.get(reading.fuel_type_id, 0)
         reading.closing_manual_volume = entered.manual_volume
         reading.closing_dip_cm = entered.dip_cm
+
+    system_cash = (
+        db.query(func.coalesce(func.sum(models.Sale.total_amount), 0))
+        .filter(models.Sale.shift_id == shift.id, models.Sale.payment_method == "cash")
+        .scalar()
+    )
+    shift.system_cash_amount = system_cash
+    shift.counted_cash_amount = payload.cash_received
 
     shift.status = "closed"
     shift.closed_by = current_user.id

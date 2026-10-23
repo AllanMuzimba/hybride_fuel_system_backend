@@ -251,6 +251,8 @@ class Shift(Base):
     closed_by = Column(Integer, ForeignKey("users.id"))
     closed_at = Column(DateTime(timezone=True))
     notes = Column(Text)
+    system_cash_amount = Column(Numeric(14, 2))
+    counted_cash_amount = Column(Numeric(14, 2))
 
 
 class ShiftFuelReading(Base):
@@ -278,6 +280,8 @@ class ShiftAttendance(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     joined_at = Column(DateTime(timezone=True), server_default=func.now())
     left_at = Column(DateTime(timezone=True))
+    system_cash_amount = Column(Numeric(14, 2))
+    counted_cash_amount = Column(Numeric(14, 2))
 
 
 class Sale(Base):

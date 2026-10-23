@@ -330,6 +330,8 @@ CREATE TABLE shifts (
     closed_by       INT REFERENCES users(id),
     closed_at       TIMESTAMPTZ,
     notes           TEXT,
+    system_cash_amount NUMERIC(14,2),
+    counted_cash_amount NUMERIC(14,2),
     CONSTRAINT chk_shift_period CHECK (end_time <> start_time)
 );
 -- One open shift per branch at a time.
@@ -359,6 +361,8 @@ CREATE TABLE shift_attendance (
     user_id     INT NOT NULL REFERENCES users(id),
     joined_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     left_at     TIMESTAMPTZ,
+    system_cash_amount NUMERIC(14,2),
+    counted_cash_amount NUMERIC(14,2),
     UNIQUE (shift_id, user_id)
 );
 CREATE INDEX idx_shift_att_user ON shift_attendance(user_id);

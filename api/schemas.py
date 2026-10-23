@@ -593,6 +593,11 @@ class ShiftCreate(BaseModel):
 
 class ShiftCloseCreate(BaseModel):
     closing_readings: List[ShiftFuelReadingInput] = Field(min_length=1)
+    cash_received: float = Field(ge=0)
+
+
+class ShiftLeaveCreate(BaseModel):
+    cash_received: Optional[float] = Field(default=None, ge=0)
 
 
 class ShiftModeUpdate(BaseModel):
@@ -607,6 +612,9 @@ class ShiftAttendeeOut(BaseModel):
     role: str
     joined_at: datetime
     left_at: Optional[datetime] = None
+    system_cash_amount: Optional[float] = None
+    counted_cash_amount: Optional[float] = None
+    cash_variance: Optional[float] = None
 
 
 class ShiftOut(BaseModel):
@@ -640,6 +648,9 @@ class ShiftOut(BaseModel):
     account_amount: float = 0.0
     current_user_joined: bool = False
     fuel_readings: List[ShiftFuelReadingOut] = Field(default_factory=list)
+    system_cash_amount: Optional[float] = None
+    counted_cash_amount: Optional[float] = None
+    cash_variance: Optional[float] = None
 
 
 class ShiftVolumeEntry(BaseModel):
@@ -663,7 +674,10 @@ class ShiftCustomerPurchase(BaseModel):
 
 class ShiftFuelSettlement(BaseModel):
     fuel_type_id: int
-    total_volume: float = Field(gt=0)
+    total_volume: Optional[float] = Field(default=None, gt=0)
+    opening_volume: Optional[float] = Field(default=None, ge=0)
+    closing_volume: Optional[float] = Field(default=None, ge=0)
+    closing_dip_cm: Optional[float] = Field(default=None, ge=0)
     card_volume: float = Field(default=0, ge=0)
     mobile_money_volume: float = Field(default=0, ge=0)
 
@@ -671,6 +685,7 @@ class ShiftFuelSettlement(BaseModel):
 class ShiftSettlementCreate(BaseModel):
     fuel_totals: List[ShiftFuelSettlement] = Field(min_length=1)
     customer_purchases: List[ShiftCustomerPurchase] = Field(default_factory=list)
+    cash_received: Optional[float] = Field(default=None, ge=0)
 
 
 # -------------------------------------------------------------- expenses ----

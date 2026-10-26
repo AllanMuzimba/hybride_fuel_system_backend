@@ -159,15 +159,41 @@ class FuelStock(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class FuelTank(Base):
+    __tablename__ = "fuel_tanks"
+    __table_args__ = (UniqueConstraint("branch_id", "name"),)
+    id = Column(Integer, primary_key=True)
+    branch_id = Column(Integer, ForeignKey("company_branches.id"), nullable=False)
+    fuel_type_id = Column(Integer, ForeignKey("fuel_types.id"), nullable=False)
+    name = Column(String(100), nullable=False)
+    current_volume = Column(Numeric(14, 3), nullable=False, default=0)
+    capacity = Column(Numeric(14, 3), nullable=False)
+    tank_height_cm = Column(Numeric(8, 2), nullable=False, default=100)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class TankDipCalibration(Base):
     __tablename__ = "tank_dip_calibrations"
-    __table_args__ = (UniqueConstraint("branch_id", "fuel_type_id", "dip_cm"),)
+    __table_args__ = (UniqueConstraint("tank_id", "dip_cm"),)
     id = Column(Integer, primary_key=True)
+    tank_id = Column(Integer, ForeignKey("fuel_tanks.id"), nullable=True)
     branch_id = Column(Integer, ForeignKey("company_branches.id"), nullable=False)
     fuel_type_id = Column(Integer, ForeignKey("fuel_types.id"), nullable=False)
     dip_cm = Column(Numeric(8, 2), nullable=False)
     volume_litres = Column(Numeric(14, 3), nullable=False)
     created_by = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class FuelPump(Base):
+    __tablename__ = "fuel_pumps"
+    __table_args__ = (UniqueConstraint("branch_id", "name"),)
+    id = Column(Integer, primary_key=True)
+    branch_id = Column(Integer, ForeignKey("company_branches.id"), nullable=False)
+    tank_id = Column(Integer, ForeignKey("fuel_tanks.id"), nullable=False)
+    name = Column(String(100), nullable=False)
+    meter_reading = Column(Numeric(16, 3), nullable=False, default=0)
+    is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -178,6 +204,7 @@ class FuelReceipt(Base):
     branch_id = Column(Integer, ForeignKey("company_branches.id"), nullable=False)
     supplier_id = Column(Integer, ForeignKey("suppliers.id"), nullable=False)
     fuel_type_id = Column(Integer, ForeignKey("fuel_types.id"), nullable=False)
+    tank_id = Column(Integer, ForeignKey("fuel_tanks.id"))
     volume = Column(Numeric(14, 3), nullable=False)
     cost_per_liter = Column(Numeric(12, 2), nullable=False)
     total_cost = Column(Numeric(14, 2), Computed("volume * cost_per_liter", persisted=True))  # generated column
@@ -280,8 +307,18 @@ class ShiftAttendance(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     joined_at = Column(DateTime(timezone=True), server_default=func.now())
     left_at = Column(DateTime(timezone=True))
-    system_cash_amount = Column(Numeric(14, 2))
-    counted_cash_amount = Column(Numeric(14, 2))
+
+
+class ShiftPumpAssignment(Base):
+    __tablename__ = "shift_pump_assignments"
+    __table_args__ = (UniqueConstraint("shift_id", "pump_id"),)
+    id = Column(Integer, primary_key=True)
+    shift_id = Column(Integer, ForeignKey("shifts.id"), nullable=False)
+    pump_id = Column(Integer, ForeignKey("fuel_pumps.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    opening_meter = Column(Numeric(16, 3), nullable=False)
+    closing_meter = Column(Numeric(16, 3))
+    assigned_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class Sale(Base):
@@ -292,6 +329,7 @@ class Sale(Base):
     fuel_type_id = Column(Integer, ForeignKey("fuel_types.id"), nullable=False)
     customer_id = Column(Integer, ForeignKey("customers.id"))
     shift_id = Column(Integer, ForeignKey("shifts.id"))  # shift this sale was booked to
+    pump_id = Column(Integer, ForeignKey("fuel_pumps.id"))
     volume = Column(Numeric(14, 3), nullable=False)
     cost_price = Column(Numeric(12, 2), nullable=False)
     sell_price = Column(Numeric(12, 2), nullable=False)
@@ -301,6 +339,26 @@ class Sale(Base):
     sale_date = Column(DateTime(timezone=True), server_default=func.now())
     entry_source = Column(String(20), nullable=False, default="realtime")  # realtime | shift_close
     notes = Column(Text)
+
+
+class FuelVoucher(Base):
+    __tablename__ = "fuel_vouchers"
+    id = Column(Integer, primary_key=True)
+    token = Column(String(20), unique=True, nullable=False)
+    branch_id = Column(Integer, ForeignKey("company_branches.id"), nullable=False)
+    shift_id = Column(Integer, ForeignKey("shifts.id"), nullable=False)
+    fuel_type_id = Column(Integer, ForeignKey("fuel_types.id"), nullable=False)
+    amount = Column(Numeric(14, 2), nullable=False)
+    volume = Column(Numeric(14, 3), nullable=False)
+    payment_method = Column(Enum(*PAYMENT_METHODS, name="payment_method", create_type=False), nullable=False)
+    customer_id = Column(Integer, ForeignKey("customers.id"))
+    status = Column(String(20), nullable=False, default="issued")
+    issued_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    redeemed_by = Column(Integer, ForeignKey("users.id"))
+    pump_id = Column(Integer, ForeignKey("fuel_pumps.id"))
+    sale_id = Column(Integer, ForeignKey("sales.id"))
+    issued_at = Column(DateTime(timezone=True), server_default=func.now())
+    redeemed_at = Column(DateTime(timezone=True))
 
 
 class ProductCategory(Base):

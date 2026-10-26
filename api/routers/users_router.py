@@ -48,7 +48,7 @@ def _visible_user(db: Session, user_id: int, current_user: models.User) -> model
 def create_user(
     payload: schemas.UserCreate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("manager", "director", "developer", "dev_support")),
+    current_user: models.User = Depends(auth.require_role("manager", "director", "developer")),
 ):
     platform = current_user.role in PLATFORM_ROLES
     company_id = payload.company_id if platform and payload.company_id is not None else current_user.company_id
@@ -106,7 +106,7 @@ def update_user(
     user_id: int,
     payload: schemas.UserUpdate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("manager", "director", "developer", "dev_support")),
+    current_user: models.User = Depends(auth.require_role("manager", "director", "developer")),
 ):
     target = _visible_user(db, user_id, current_user)
     if target.role in PLATFORM_ROLES and current_user.role != "developer":
@@ -173,7 +173,7 @@ def update_user(
 def deactivate_user(
     user_id: int,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("manager", "director", "developer", "dev_support")),
+    current_user: models.User = Depends(auth.require_role("manager", "director", "developer")),
 ):
     target = _visible_user(db, user_id, current_user)
     if target.role in PLATFORM_ROLES and current_user.role != "developer":

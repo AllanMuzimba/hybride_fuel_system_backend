@@ -103,6 +103,23 @@ def record_sale(
     if not fuel_type or fuel_type.company_id != current_user.company_id:
         raise HTTPException(status_code=404, detail="Fuel type not found in your company")
 
+    pump = None
+    if payload.pump_id is not None:
+        pump = db.query(models.FuelPump).get(payload.pump_id)
+        tank = db.query(models.FuelTank).get(pump.tank_id) if pump else None
+        if (not pump or not pump.is_active or pump.branch_id != payload.branch_id
+                or not tank or tank.fuel_type_id != payload.fuel_type_id):
+            raise HTTPException(status_code=400, detail="Pump does not match the selected branch and fuel")
+        if current_user.role == "attendant" and not db.query(models.ShiftPumpAssignment).filter_by(
+            shift_id=shift.id, pump_id=pump.id, user_id=current_user.id
+        ).first():
+            raise HTTPException(status_code=403, detail="This pump is not assigned to you for the active shift")
+    elif db.query(models.FuelPump).filter(
+        models.FuelPump.branch_id == payload.branch_id,
+        models.FuelPump.is_active.is_(True),
+    ).first():
+        raise HTTPException(status_code=400, detail="Select an assigned pump for this sale")
+
     price = db.query(models.BranchFuelPrice).get((payload.branch_id, payload.fuel_type_id))
     if not price:
         raise HTTPException(
@@ -127,6 +144,7 @@ def record_sale(
         fuel_type_id=payload.fuel_type_id,
         customer_id=payload.customer_id,
         shift_id=shift.id,
+        pump_id=pump.id if pump else None,
         volume=payload.volume,
         cost_price=price.current_cost,
         sell_price=price.sell_price,

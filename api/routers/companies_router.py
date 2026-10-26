@@ -38,9 +38,21 @@ def create_company(
     Branches: pass branch_names to name them up front (entries are trimmed,
     blank ones dropped, a duplicate name for this company is rejected with
     400); when that's absent or empty the branch_count default names
-    ("Branch 1", "Branch 2", ...) are created as before."""
-    if db.query(models.Company).filter(models.Company.slug == payload.slug).first():
-        raise HTTPException(status_code=400, detail="That company slug is already taken")
+    ("Branch 1", "Branch 2", ...) are created as before.
+
+    The slug is optional: when it is blank it is derived from the company
+    name and made unique with a numeric suffix."""
+    slug = (payload.slug or "").strip().lower()
+    if slug:
+        if db.query(models.Company).filter(models.Company.slug == slug).first():
+            raise HTTPException(status_code=400, detail="That company slug is already taken")
+    else:
+        base = re.sub(r"[^a-z0-9]+", "-", payload.name.strip().lower()).strip("-") or "fuel-company"
+        slug = base[:90]
+        suffix = 2
+        while db.query(models.Company).filter_by(slug=slug).first():
+            slug = f"{base[:88]}-{suffix}"
+            suffix += 1
 
     branch_names: List[str] = []
     for entry in payload.branch_names or []:
@@ -56,7 +68,7 @@ def create_company(
             "SELECT fn_create_company(:name, :slug, :address, :lat, :lng, :phone, :email, :url) AS id"
         ),
         {
-            "name": payload.name, "slug": payload.slug, "address": payload.address,
+            "name": payload.name, "slug": slug, "address": payload.address,
             "lat": payload.latitude, "lng": payload.longitude,
             "phone": payload.phone, "email": payload.email, "url": payload.url,
         },
@@ -203,12 +215,17 @@ def update_company(
     company_id: int,
     payload: schemas.CompanyUpdate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("developer")),
+    current_user: models.User = Depends(auth.require_role("manager", "director", "developer")),
 ):
     company = db.query(models.Company).filter(models.Company.id == company_id).first()
-    if not company:
+    if not company or (
+        current_user.role != "developer" and company.id != current_user.company_id
+    ):
         raise HTTPException(status_code=404, detail="Company not found")
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    fields = payload.model_dump(exclude_unset=True)
+    if current_user.role != "developer":
+        fields.pop("is_active", None)
+    for field, value in fields.items():
         setattr(company, field, value.strip() if isinstance(value, str) else value)
     db.commit()
     db.refresh(company)
@@ -226,7 +243,10 @@ def get_company_by_slug(slug: str, db: Session = Depends(get_db)):
 
 @router.get("/companies/me", response_model=schemas.CompanyOut)
 def get_my_company(db: Session = Depends(get_db), current_user: models.User = Depends(auth.get_current_user)):
-    return db.query(models.Company).get(current_user.company_id)
+    company = db.query(models.Company).get(current_user.company_id) if current_user.company_id else None
+    if company is None:
+        raise HTTPException(status_code=404, detail="No company is linked to this account")
+    return company
 
 
 @router.post("/companies/{company_id}/bootstrap-admin", response_model=schemas.UserOut)
@@ -303,9 +323,9 @@ def _branch_for_edit(db: Session, current_user: models.User, branch_id: int) -> 
 def create_branch(
     payload: schemas.BranchCreate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("manager", "developer", "dev_support")),
+    current_user: models.User = Depends(auth.require_role("manager", "director", "developer")),
 ):
-    """Opens a branch in your company; developer / dev_support may pass
+    """Opens a branch in your company; developer may pass
     payload.company_id to open one for another tenant, everyone else is
     pinned to their own company."""
     target_company = auth.resolve_company_id(db, current_user, payload.company_id)
@@ -362,10 +382,10 @@ def update_branch(
     branch_id: int,
     payload: schemas.BranchUpdate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("manager", "developer", "dev_support")),
+    current_user: models.User = Depends(auth.require_role("manager", "director", "developer")),
 ):
-    """Edit a branch: a company manager may change their own company's
-    branches, developer / dev_support any tenant's. Only the fields present
+    """Edit a branch: a company manager or director may change their own
+    company's branches, a developer any tenant's. Only the fields present
     in the payload are applied, and a rename onto a name already used in
     that company is rejected with 400."""
     branch = _branch_for_edit(db, current_user, branch_id)
@@ -391,10 +411,10 @@ def update_branch(
 def deactivate_branch(
     branch_id: int,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("manager", "developer", "dev_support")),
+    current_user: models.User = Depends(auth.require_role("manager", "director", "developer")),
 ):
-    """Retires a branch (is_active=False). A manager can only deactivate
-    their own company's branches; developer / dev_support may deactivate any
+    """Retires a branch (is_active=False). A manager or director can only
+    deactivate their own company's branches; a developer may deactivate any
     tenant's."""
     branch = _branch_for_edit(db, current_user, branch_id)
     branch.is_active = False

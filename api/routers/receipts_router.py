@@ -46,6 +46,21 @@ def receive_fuel(
     if not fuel_type or fuel_type.company_id != current_user.company_id:
         raise HTTPException(status_code=404, detail="Fuel type not found in your company")
 
+    tank = None
+    if payload.tank_id is not None:
+        tank = db.query(models.FuelTank).get(payload.tank_id)
+        if not tank or tank.branch_id != payload.branch_id or tank.fuel_type_id != payload.fuel_type_id:
+            raise HTTPException(status_code=404, detail="Tank not found for the selected branch and fuel type")
+    else:
+        tanks = db.query(models.FuelTank).filter(
+            models.FuelTank.branch_id == payload.branch_id,
+            models.FuelTank.fuel_type_id == payload.fuel_type_id,
+        ).all()
+        if len(tanks) == 1:
+            tank = tanks[0]
+        elif len(tanks) > 1:
+            raise HTTPException(status_code=400, detail="Select which tank received this delivery")
+
     volume = payload.volume
     if payload.dip_before_cm is not None and payload.dip_after_cm is not None:
         if payload.dip_after_cm <= payload.dip_before_cm:
@@ -53,7 +68,9 @@ def receive_fuel(
                 status_code=400,
                 detail="Dip reading after delivery must be greater than the reading before it",
             )
-        volume = _volume_from_dips(db, payload.branch_id, payload.fuel_type_id,
+        if tank is None:
+            raise HTTPException(status_code=422, detail="Create and select a tank before using dip readings")
+        volume = _volume_from_dips(db, tank.id,
                                    payload.dip_before_cm, payload.dip_after_cm)
 
     if volume is None or volume <= 0:
@@ -64,6 +81,7 @@ def receive_fuel(
         branch_id=payload.branch_id,
         supplier_id=payload.supplier_id,
         fuel_type_id=payload.fuel_type_id,
+        tank_id=tank.id if tank else None,
         volume=volume,
         cost_per_liter=payload.cost_per_liter,
         invoice_reference=payload.invoice_reference,
@@ -83,16 +101,16 @@ def receive_fuel(
     return receipt
 
 
-def _volume_from_dips(db: Session, branch_id: int, fuel_type_id: int,
+def _volume_from_dips(db: Session, tank_id: int,
                       dip_before_cm: float, dip_after_cm: float) -> Optional[float]:
     """Litres delivered = (after reading) − (before reading), each converted
     with the branch's tank calibration. NULL when the tank has no capacity
     set yet."""
     row = db.execute(
         text(
-            "SELECT fn_dip_to_volume(:b, :f, :after) - fn_dip_to_volume(:b, :f, :before) AS v"
+            "SELECT fn_tank_dip_to_volume(:t, :after) - fn_tank_dip_to_volume(:t, :before) AS v"
         ),
-        {"b": branch_id, "f": fuel_type_id, "after": dip_after_cm, "before": dip_before_cm},
+        {"t": tank_id, "after": dip_after_cm, "before": dip_before_cm},
     ).first()
     if row is None or row[0] is None:
         raise HTTPException(

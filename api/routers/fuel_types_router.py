@@ -173,14 +173,42 @@ def set_stock_capacity(
     if not stock:
         stock = models.FuelStock(branch_id=payload.branch_id, fuel_type_id=payload.fuel_type_id, current_volume=0)
         db.add(stock)
-    stock.capacity = payload.capacity
+    if payload.tank_id is not None:
+        tank = db.query(models.FuelTank).get(payload.tank_id)
+        if not tank or tank.branch_id != payload.branch_id or tank.fuel_type_id != payload.fuel_type_id:
+            raise HTTPException(status_code=404, detail="Tank not found for that branch and fuel type")
+    else:
+        tank_name = (payload.tank_name or "").strip()
+        if not tank_name:
+            count = db.query(models.FuelTank).filter(
+                models.FuelTank.branch_id == payload.branch_id,
+                models.FuelTank.fuel_type_id == payload.fuel_type_id,
+            ).count()
+            tank_name = f"{fuel_type.name} Tank {count + 1}"
+        tank = models.FuelTank(
+            branch_id=payload.branch_id, fuel_type_id=payload.fuel_type_id,
+            name=tank_name, current_volume=0, capacity=payload.capacity,
+        )
+        db.add(tank)
+    if payload.tank_name is not None:
+        tank.name = payload.tank_name.strip()
+    tank.capacity = payload.capacity
     if payload.tank_height_cm is not None:
-        stock.tank_height_cm = payload.tank_height_cm
+        tank.tank_height_cm = payload.tank_height_cm
+
+    # Legacy aggregate capacity is retained for compatibility, but is always
+    # the sum of physical tanks so it can never be double-counted in reports.
+    db.flush()
+    totals = db.query(models.FuelTank).filter(
+        models.FuelTank.branch_id == payload.branch_id,
+        models.FuelTank.fuel_type_id == payload.fuel_type_id,
+    ).all()
+    stock.capacity = sum(float(t.capacity) for t in totals)
     db.commit()
 
     row = db.execute(
-        text("SELECT * FROM v_branch_stock_status WHERE branch_id = :b AND fuel_type_id = :f"),
-        {"b": payload.branch_id, "f": payload.fuel_type_id},
+        text("SELECT * FROM v_branch_stock_status WHERE tank_id = :t"),
+        {"t": tank.id},
     ).mappings().first()
     return dict(row)
 
@@ -201,27 +229,27 @@ def _require_fuel_type(
     return fuel_type
 
 
-def _dip_volume_payload(db: Session, branch_id: int, fuel_type_id: int, dip_cm: float) -> dict:
+def _dip_volume_payload(db: Session, tank: models.FuelTank, dip_cm: float) -> dict:
     volume = db.execute(
-        text("SELECT fn_dip_to_volume(:b, :f, :d) AS v"),
-        {"b": branch_id, "f": fuel_type_id, "d": dip_cm},
+        text("SELECT fn_tank_dip_to_volume(:t, :d) AS v"),
+        {"t": tank.id, "d": dip_cm},
     ).scalar()
     if volume is None:
         raise HTTPException(
             status_code=422,
-            detail="This tank has no calibration yet — set its capacity first "
-                   "(PATCH /fuel-types/stock/capacity)",
+            detail="Tank calibration could not be evaluated",
         )
     has_chart = db.execute(
         text(
             "SELECT EXISTS(SELECT 1 FROM tank_dip_calibrations "
-            "WHERE branch_id = :b AND fuel_type_id = :f)"
+            "WHERE tank_id = :t)"
         ),
-        {"b": branch_id, "f": fuel_type_id},
+        {"t": tank.id},
     ).scalar()
     return {
-        "branch_id": branch_id,
-        "fuel_type_id": fuel_type_id,
+        "tank_id": tank.id,
+        "branch_id": tank.branch_id,
+        "fuel_type_id": tank.fuel_type_id,
         "dip_cm": dip_cm,
         "volume_litres": float(volume),
         "source": "calibration" if has_chart else "linear",
@@ -230,6 +258,7 @@ def _dip_volume_payload(db: Session, branch_id: int, fuel_type_id: int, dip_cm: 
 
 @router.get("/dip-volume", response_model=schemas.DipVolumeOut)
 def dip_to_volume(
+    tank_id: int,
     branch_id: int,
     fuel_type_id: int,
     dip_cm: float,
@@ -243,11 +272,15 @@ def dip_to_volume(
     target_company = auth.resolve_company_id(db, current_user, company_id)
     auth.verify_tank_branch(db, current_user, target_company, branch_id)
     _require_fuel_type(db, target_company, fuel_type_id)
-    return _dip_volume_payload(db, branch_id, fuel_type_id, dip_cm)
+    tank = db.query(models.FuelTank).get(tank_id)
+    if not tank or tank.branch_id != branch_id or tank.fuel_type_id != fuel_type_id:
+        raise HTTPException(status_code=404, detail="Tank not found for that branch and fuel type")
+    return _dip_volume_payload(db, tank, dip_cm)
 
 
 @router.get("/dip-calibration", response_model=schemas.DipCalibrationOut)
 def get_dip_calibration(
+    tank_id: int,
     branch_id: int,
     fuel_type_id: int,
     company_id: Optional[int] = None,
@@ -259,25 +292,27 @@ def get_dip_calibration(
     target_company = auth.resolve_company_id(db, current_user, company_id)
     auth.verify_tank_branch(db, current_user, target_company, branch_id)
     _require_fuel_type(db, target_company, fuel_type_id)
-    return _calibration_payload(db, branch_id, fuel_type_id)
+    tank = db.query(models.FuelTank).get(tank_id)
+    if not tank or tank.branch_id != branch_id or tank.fuel_type_id != fuel_type_id:
+        raise HTTPException(status_code=404, detail="Tank not found for that branch and fuel type")
+    return _calibration_payload(db, tank)
 
 
-def _calibration_payload(db: Session, branch_id: int, fuel_type_id: int) -> dict:
+def _calibration_payload(db: Session, tank: models.FuelTank) -> dict:
     rows = (
         db.query(models.TankDipCalibration)
         .filter(
-            models.TankDipCalibration.branch_id == branch_id,
-            models.TankDipCalibration.fuel_type_id == fuel_type_id,
+            models.TankDipCalibration.tank_id == tank.id,
         )
         .order_by(models.TankDipCalibration.dip_cm)
         .all()
     )
-    stock = db.query(models.FuelStock).get((branch_id, fuel_type_id))
     return {
-        "branch_id": branch_id,
-        "fuel_type_id": fuel_type_id,
-        "tank_height_cm": float(stock.tank_height_cm) if stock and stock.tank_height_cm else None,
-        "capacity": float(stock.capacity) if stock and stock.capacity else None,
+        "tank_id": tank.id,
+        "branch_id": tank.branch_id,
+        "fuel_type_id": tank.fuel_type_id,
+        "tank_height_cm": float(tank.tank_height_cm),
+        "capacity": float(tank.capacity),
         "source": "calibration" if rows else "linear",
         "points": [
             {"dip_cm": float(r.dip_cm), "volume_litres": float(r.volume_litres)} for r in rows
@@ -301,6 +336,9 @@ def set_dip_calibration(
     target_company = auth.resolve_company_id(db, current_user, payload.company_id)
     auth.verify_tank_branch(db, current_user, target_company, payload.branch_id)
     _require_fuel_type(db, target_company, payload.fuel_type_id)
+    tank = db.query(models.FuelTank).get(payload.tank_id)
+    if not tank or tank.branch_id != payload.branch_id or tank.fuel_type_id != payload.fuel_type_id:
+        raise HTTPException(status_code=404, detail="Tank not found for that branch and fuel type")
 
     seen = set()
     for p in payload.points:
@@ -312,12 +350,12 @@ def set_dip_calibration(
         seen.add(key)
 
     db.query(models.TankDipCalibration).filter(
-        models.TankDipCalibration.branch_id == payload.branch_id,
-        models.TankDipCalibration.fuel_type_id == payload.fuel_type_id,
+        models.TankDipCalibration.tank_id == payload.tank_id,
     ).delete()
     for p in payload.points:
         db.add(
             models.TankDipCalibration(
+                tank_id=payload.tank_id,
                 branch_id=payload.branch_id,
                 fuel_type_id=payload.fuel_type_id,
                 dip_cm=p.dip_cm,
@@ -326,7 +364,7 @@ def set_dip_calibration(
             )
         )
     db.commit()
-    return _calibration_payload(db, payload.branch_id, payload.fuel_type_id)
+    return _calibration_payload(db, tank)
 
 
 # ------------------------------------------------------------------------

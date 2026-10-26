@@ -42,7 +42,12 @@ class ProfileUpdate(BaseModel):
 # ------------------------------------------------------------ companies ----
 class CompanyCreate(BaseModel):
     name: str = Field(min_length=2, max_length=150)
-    slug: str = Field(min_length=2, max_length=100, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    slug: Optional[str] = Field(
+        default=None,
+        max_length=100,
+        pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$",
+        description="Optional. Generated from the company name when omitted.",
+    )
     branch_count: int = Field(default=1, ge=1, le=500)
     address: Optional[str] = None
     latitude: Optional[float] = None
@@ -316,6 +321,8 @@ class FuelStockOut(BaseModel):
 
 
 class StockCapacityUpdate(BaseModel):
+    tank_id: Optional[int] = None
+    tank_name: Optional[str] = Field(default=None, min_length=1, max_length=100)
     branch_id: int
     fuel_type_id: int
     capacity: float
@@ -325,6 +332,8 @@ class StockCapacityUpdate(BaseModel):
 
 class BranchStockStatusOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+    tank_id: int
+    tank_name: str
     branch_id: int
     company_id: int
     branch_name: str
@@ -353,6 +362,7 @@ class FuelReceiptCreate(BaseModel):
     branch_id: int
     supplier_id: int
     fuel_type_id: int
+    tank_id: Optional[int] = None
     volume: float
     cost_per_liter: float
     invoice_reference: str
@@ -368,6 +378,7 @@ class FuelReceiptOut(BaseModel):
     branch_id: int
     supplier_id: int
     fuel_type_id: int
+    tank_id: Optional[int] = None
     volume: float
     cost_per_liter: float
     total_cost: float
@@ -387,6 +398,7 @@ class FuelReceiptOut(BaseModel):
 
 # ---------------------------------------------------- dip calibration ----
 class DipVolumeOut(BaseModel):
+    tank_id: int
     branch_id: int
     fuel_type_id: int
     dip_cm: float
@@ -400,6 +412,7 @@ class DipCalibrationPoint(BaseModel):
 
 
 class DipCalibrationUpdate(BaseModel):
+    tank_id: int
     branch_id: int
     fuel_type_id: int
     points: List[DipCalibrationPoint]
@@ -407,6 +420,7 @@ class DipCalibrationUpdate(BaseModel):
 
 
 class DipCalibrationOut(BaseModel):
+    tank_id: int
     branch_id: int
     fuel_type_id: int
     tank_height_cm: Optional[float] = None
@@ -506,6 +520,7 @@ PaymentMethod = Literal["cash", "card", "mobile_money", "account"]
 class SaleCreate(BaseModel):
     branch_id: int
     fuel_type_id: int
+    pump_id: Optional[int] = None
     customer_id: Optional[int] = None
     volume: float
     payment_method: PaymentMethod
@@ -524,6 +539,7 @@ class SaleOut(BaseModel):
     id: int
     branch_id: int
     fuel_type_id: int
+    pump_id: Optional[int] = None
     customer_id: Optional[int] = None
     shift_id: Optional[int] = None
     shift_label: Optional[str] = None      # 'Morning' / 'Night' / 'Custom'

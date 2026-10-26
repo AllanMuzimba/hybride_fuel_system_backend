@@ -299,8 +299,9 @@ def create_voucher(payload: VoucherCreate, db: Session = Depends(get_db),
 def get_voucher(token: str, db: Session = Depends(get_db),
                 current_user: models.User = Depends(auth.get_current_user)):
     voucher = db.query(models.FuelVoucher).filter(models.FuelVoucher.token == token.upper()).first()
-    if not voucher or voucher.branch_id != current_user.branch_id:
+    if not voucher:
         raise HTTPException(status_code=404, detail="Voucher not found")
+    auth.verify_branch_access(current_user, voucher.branch_id, db)
     return {"token": voucher.token, "status": voucher.status,
             "amount": float(voucher.amount), "volume": float(voucher.volume),
             "fuel_type_id": voucher.fuel_type_id, "shift_id": voucher.shift_id}

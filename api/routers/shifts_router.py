@@ -49,6 +49,11 @@ def settle_shift_volumes(
     shift = get_shift_or_404(db, shift_id, current_user)
     if shift.entry_mode != "end_of_shift":
         raise HTTPException(status_code=409, detail="Use live sales for this shift")
+    if db.query(models.FuelPump.id).filter(
+        models.FuelPump.branch_id == shift.branch_id,
+        models.FuelPump.is_active.is_(True),
+    ).first():
+        raise HTTPException(status_code=409, detail="This branch sells through pumps; record end-of-shift litres per pump instead")
     if db.query(models.Sale.id).filter(models.Sale.shift_id == shift.id).first():
         raise HTTPException(status_code=409, detail="This shift already has sales; settlement can only be submitted once")
     totals = {row.fuel_type_id: row for row in payload.fuel_totals}

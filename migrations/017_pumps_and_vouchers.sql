@@ -47,33 +47,11 @@ CREATE TABLE IF NOT EXISTS fuel_vouchers (
 CREATE INDEX IF NOT EXISTS idx_fuel_vouchers_token_status
     ON fuel_vouchers(token, status);
 
--- Sales without a pump (kiosk, legacy entries) still drain physical tanks
--- oldest-first; pump sales are handled exactly by trg_sale_pump_stock below.
-CREATE OR REPLACE FUNCTION trg_fn_allocate_sale_to_tanks()
-RETURNS TRIGGER AS $$
-DECLARE r RECORD; v_remaining NUMERIC := NEW.volume; v_take NUMERIC;
-BEGIN
-    IF NEW.pump_id IS NOT NULL THEN RETURN NEW; END IF;
-    FOR r IN
-      SELECT id, current_volume FROM fuel_tanks
-      WHERE branch_id = NEW.branch_id AND fuel_type_id = NEW.fuel_type_id
-        AND current_volume > 0
-      ORDER BY id FOR UPDATE
-    LOOP
-      EXIT WHEN v_remaining <= 0;
-      v_take := LEAST(r.current_volume, v_remaining);
-      UPDATE fuel_tanks SET current_volume = current_volume - v_take, updated_at = now()
-      WHERE id = r.id;
-      v_remaining := v_remaining - v_take;
-    END LOOP;
-    IF v_remaining > 0 AND EXISTS (
-      SELECT 1 FROM fuel_tanks WHERE branch_id = NEW.branch_id AND fuel_type_id = NEW.fuel_type_id
-    ) THEN
-      RAISE EXCEPTION 'Physical tank volumes are short by % litres; reconcile tank dips before selling', v_remaining;
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
+-- Every fuel sale is pump-linked: trg_sale_pump_stock below deducts exactly
+-- the pump's tank. There is deliberately no oldest-tank fallback — branches
+-- must calibrate their pumps (and the POS hides fuel until they do).
+DROP TRIGGER IF EXISTS trg_allocate_sale_to_tanks ON sales;
+DROP FUNCTION IF EXISTS trg_fn_allocate_sale_to_tanks();
 
 -- A pump-linked sale updates exactly its linked physical tank and meter.
 CREATE OR REPLACE FUNCTION trg_fn_sale_pump_stock()

@@ -13,6 +13,10 @@ from .shifts_router import require_on_shift, require_realtime_shift
 
 router = APIRouter(prefix="/kiosk", tags=["kiosk"])
 DEFAULT_ROLES = ["manager", "supervisor", "developer"]
+# Kiosk sales lists and daily reports live in the Reports page — the POS
+# itself never exposes them, so POS-only roles (cashier, attendant,
+# secretary) are refused even if the kiosk view roles allow them.
+REPORT_ROLES = ("supervisor", "manager", "director", "developer", "dev_support")
 
 
 def _settings(db, company_id):
@@ -147,11 +151,17 @@ def checkout(payload: schemas.KioskSaleCreate, db: Session = Depends(get_db),
     has_fuel = any(item.fuel_type_id for item in payload.items)
     shift = None
     if has_fuel:
+        if not db.query(models.FuelPump.id).filter(
+                models.FuelPump.branch_id == payload.branch_id,
+                models.FuelPump.is_active.is_(True)).first():
+            raise HTTPException(400, "No pumps are configured for this branch; "
+                                      "add and calibrate pumps before selling fuel")
         shift = require_realtime_shift(db, payload.branch_id)
         require_on_shift(db, shift, user)
     prepared, total = [], Decimal("0")
     for item in payload.items:
         quantity = Decimal(str(item.quantity))
+        pump = None
         if item.product_id:
             source = db.query(models.KioskProduct).filter_by(
                 id=item.product_id, company_id=user.company_id,
@@ -165,10 +175,15 @@ def checkout(payload: schemas.KioskSaleCreate, db: Session = Depends(get_db),
             branch_price = db.query(models.BranchFuelPrice).get((payload.branch_id, item.fuel_type_id))
             if not source or not branch_price:
                 raise HTTPException(404, "Fuel type or price not found")
+            pump = db.query(models.FuelPump).get(item.pump_id) if item.pump_id else None
+            tank = db.query(models.FuelTank).get(pump.tank_id) if pump else None
+            if (not pump or not pump.is_active or pump.branch_id != payload.branch_id
+                    or not tank or tank.fuel_type_id != source.id):
+                raise HTTPException(400, f"Select a pump that dispenses {source.name} at this branch")
             kind, cost, price = "fuel", branch_price.current_cost, branch_price.sell_price
         amount = quantity * price
         total += amount
-        prepared.append((kind, source, quantity, cost, price, amount))
+        prepared.append((kind, source, quantity, cost, price, amount, pump))
     cash = Decimal(str(payload.cash_received or 0))
     if payload.payment_method == "cash" and cash < total:
         raise HTTPException(400, "Cash received is less than the sale total")
@@ -178,14 +193,14 @@ def checkout(payload: schemas.KioskSaleCreate, db: Session = Depends(get_db),
         change_given=cash-total if payload.payment_method == "cash" else None, served_by=user.id)
     db.add(order)
     db.flush()
-    for kind, source, quantity, cost, price, amount in prepared:
+    for kind, source, quantity, cost, price, amount, pump in prepared:
         fuel_sale = None
         if kind == "product":
             source.stock_quantity -= quantity
         else:
             fuel_sale = models.Sale(branch_id=payload.branch_id, fuel_type_id=source.id,
-                shift_id=shift.id, volume=quantity, cost_price=cost, sell_price=price,
-                payment_method=payload.payment_method, served_by=user.id,
+                shift_id=shift.id, pump_id=pump.id, volume=quantity, cost_price=cost,
+                sell_price=price, payment_method=payload.payment_method, served_by=user.id,
                 entry_source="realtime", notes="Kiosk order " + str(order.id))
             db.add(fuel_sale)
             db.flush()
@@ -209,6 +224,8 @@ def sales(start_date: Optional[date] = None, end_date: Optional[date] = None,
           branch_id: Optional[int] = None, db: Session = Depends(get_db),
           user: models.User = Depends(auth.get_current_user)):
     _permit(db, user, "view")
+    if user.role not in REPORT_ROLES:
+        raise HTTPException(403, "Kiosk sales are reviewed from the Reports page by supervisors and managers")
     q = db.query(models.KioskSale, models.CompanyBranch.branch_name).join(
         models.CompanyBranch).filter(models.KioskSale.company_id == user.company_id)
     if branch_id:
@@ -233,6 +250,8 @@ def sales(start_date: Optional[date] = None, end_date: Optional[date] = None,
 def daily(start_date: date, end_date: date, branch_id: Optional[int] = None,
           db: Session = Depends(get_db), user: models.User = Depends(auth.get_current_user)):
     _permit(db, user, "view")
+    if user.role not in REPORT_ROLES:
+        raise HTTPException(403, "Kiosk daily reports are reviewed from the Reports page by supervisors and managers")
     q = db.query(func.date(models.KioskSale.sale_date), models.CompanyBranch.branch_name,
         func.count(models.KioskSale.id), func.sum(models.KioskSale.total_amount)).join(
         models.CompanyBranch).filter(models.KioskSale.company_id == user.company_id,

@@ -582,6 +582,7 @@ class KioskProductUpdate(BaseModel):
 class KioskCartItem(BaseModel):
     product_id: Optional[int] = None
     fuel_type_id: Optional[int] = None
+    pump_id: Optional[int] = None  # required for fuel: the pump whose tank is drawn down
     quantity: float = Field(gt=0)
 
     @model_validator(mode="after")

@@ -17,6 +17,16 @@ class Token(BaseModel):
     branch_id: Optional[int] = None
 
 
+class CompanyAccessOut(BaseModel):
+    id: int
+    name: str
+    branch_id: Optional[int] = None
+
+
+class CompanySwitch(BaseModel):
+    company_id: int
+
+
 class LoginRequest(BaseModel):
     username: str  # accepts username, email address or phone
     password: str
@@ -149,6 +159,7 @@ class UserCreate(BaseModel):
     phone: Optional[str] = None
     email: Optional[str] = None
     company_id: Optional[int] = None  # platform developer only
+    company_ids: Optional[List[int]] = None  # additional linked companies
 
 
 class UserUpdate(BaseModel):
@@ -175,6 +186,11 @@ class UserOut(BaseModel):
     email: Optional[str] = None
     is_active: bool
     created_at: datetime
+    company_ids: List[int] = Field(default_factory=list)
+
+
+class UserCompaniesUpdate(BaseModel):
+    company_ids: List[int] = Field(min_length=1)
 
 
 class CompanyInvoiceCreate(BaseModel):

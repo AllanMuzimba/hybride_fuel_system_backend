@@ -12,7 +12,7 @@ from .database import Base
 
 # ---- Enums (must match the Postgres ENUM types in schema.sql) ----
 USER_ROLES = ("attendant", "supervisor", "manager", "director", "developer",
-              "dev_support", "secretary")
+              "dev_support", "secretary", "cashier")
 PAYMENT_STATUSES = ("unpaid", "partial", "paid")
 PAYMENT_METHODS = ("cash", "card", "mobile_money", "account")
 CUSTOMER_TXN_TYPES = ("fill_up", "payment", "adjustment")
@@ -79,6 +79,17 @@ class User(Base):
     role = Column(Enum(*USER_ROLES, name="user_role"), nullable=False, default="attendant")
     phone = Column(String(30))
     email = Column(String(150))
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class UserCompanyMembership(Base):
+    __tablename__ = "user_company_memberships"
+    __table_args__ = (UniqueConstraint("user_id", "company_id"),)
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    company_id = Column(Integer, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
+    branch_id = Column(Integer, ForeignKey("company_branches.id", ondelete="SET NULL"))
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

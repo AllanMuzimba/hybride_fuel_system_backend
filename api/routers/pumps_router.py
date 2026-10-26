@@ -53,7 +53,8 @@ class PumpCloseWrite(BaseModel):
 
 class PumpSettlementEntry(BaseModel):
     pump_id: int
-    volume: float = Field(gt=0)
+    volume: Optional[float] = Field(default=None, gt=0)
+    manual_closing_meter: Optional[float] = Field(default=None, ge=0)
     card_volume: float = Field(default=0, ge=0)
     mobile_money_volume: float = Field(default=0, ge=0)
 
@@ -114,8 +115,15 @@ def assign_pump(payload: PumpAssignmentWrite, db: Session = Depends(get_db),
     if not shift or not pump or not user or pump.branch_id != shift.branch_id:
         raise HTTPException(status_code=404, detail="Shift, pump, or attendant is invalid")
     auth.verify_branch_access(current_user, shift.branch_id, db)
-    if user.company_id != current_user.company_id or user.role != "attendant":
+    membership = db.query(models.UserCompanyMembership).filter(
+        models.UserCompanyMembership.user_id == user.id,
+        models.UserCompanyMembership.company_id == current_user.company_id,
+        models.UserCompanyMembership.is_active.is_(True),
+    ).first()
+    if membership is None or user.role != "attendant":
         raise HTTPException(status_code=400, detail="Pump can only be assigned to an attendant in this company")
+    if membership.branch_id is not None and membership.branch_id != shift.branch_id:
+        raise HTTPException(status_code=403, detail="Attendant is not assigned to this branch")
     if not db.query(models.ShiftAttendance).filter_by(shift_id=shift.id, user_id=user.id).first():
         raise HTTPException(status_code=409, detail="Attendant must join the shift before pump assignment")
     assignment = models.ShiftPumpAssignment(
@@ -128,11 +136,13 @@ def assign_pump(payload: PumpAssignmentWrite, db: Session = Depends(get_db),
 
 
 @router.get("/assigned")
-def assigned_pumps(db: Session = Depends(get_db),
+def assigned_pumps(branch_id: Optional[int] = None, db: Session = Depends(get_db),
                    current_user: models.User = Depends(auth.get_current_user)):
-    if current_user.branch_id is None:
+    wanted_branch = branch_id or current_user.branch_id
+    if wanted_branch is None:
         return []
-    shift = require_realtime_shift(db, current_user.branch_id)
+    auth.verify_branch_access(current_user, wanted_branch, db)
+    shift = require_realtime_shift(db, wanted_branch)
     require_on_shift(db, shift, current_user)
     rows = db.query(models.ShiftPumpAssignment, models.FuelPump).join(
         models.FuelPump, models.FuelPump.id == models.ShiftPumpAssignment.pump_id
@@ -200,11 +210,10 @@ def settle_pump_volumes(payload: PumpSettlementWrite, db: Session = Depends(get_
         if entry.pump_id in seen:
             raise HTTPException(status_code=400, detail="Each pump can appear only once")
         seen.add(entry.pump_id)
-        if Decimal(str(entry.card_volume)) + Decimal(str(entry.mobile_money_volume)) > Decimal(str(entry.volume)):
-            raise HTTPException(status_code=400, detail="Card and mobile litres exceed a pump's total")
 
     sale_date = datetime.combine(shift.shift_date, shift.start_time).astimezone()
     summary: List[dict] = []
+    closing_by_pump: Dict[int, Decimal] = {}
     fuel_totals: Dict[int, Decimal] = {}
     for entry in payload.entries:
         pump = db.query(models.FuelPump).get(entry.pump_id)
@@ -217,9 +226,31 @@ def settle_pump_volumes(payload: PumpSettlementWrite, db: Session = Depends(get_
         assignment = db.query(models.ShiftPumpAssignment).filter_by(
             shift_id=shift.id, pump_id=pump.id).first()
         opening = Decimal(str(assignment.opening_meter if assignment else pump.meter_reading))
-        volume = Decimal(str(entry.volume))
+        entered_volume = Decimal(str(entry.volume)) if entry.volume is not None else None
+        manual_closing = (
+            Decimal(str(entry.manual_closing_meter))
+            if entry.manual_closing_meter is not None else None
+        )
+        if entered_volume is None and manual_closing is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Enter litres sold or a manual closing meter for {pump.name}",
+            )
+        if manual_closing is not None and manual_closing < opening:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Manual closing meter for {pump.name} cannot be below its opening meter",
+            )
+        meter_volume = manual_closing - opening if manual_closing is not None else None
+        # When a manual totaliser is supplied, its delta is the actual volume
+        # booked. The separately entered litres remain as a reconciliation
+        # figure and are reported as meter variance.
+        volume = meter_volume if meter_volume is not None else entered_volume
+        assert volume is not None
         card = Decimal(str(entry.card_volume))
         mobile = Decimal(str(entry.mobile_money_volume))
+        if card + mobile > volume:
+            raise HTTPException(status_code=400, detail="Card and mobile litres exceed a pump's measured total")
         for line_volume, method in ((volume - card - mobile, "cash"), (card, "card"), (mobile, "mobile_money")):
             if line_volume == 0:
                 continue
@@ -232,7 +263,8 @@ def settle_pump_volumes(payload: PumpSettlementWrite, db: Session = Depends(get_
                 sale_date=sale_date, entry_source="shift_close",
                 notes=f"End of shift pump readings · {pump.name}",
             ))
-        closing = opening + volume
+        closing = manual_closing if manual_closing is not None else opening + volume
+        closing_by_pump[pump.id] = closing
         if assignment:
             assignment.closing_meter = closing
         fuel_totals[tank.fuel_type_id] = fuel_totals.get(tank.fuel_type_id, Decimal(0)) + volume
@@ -240,8 +272,21 @@ def settle_pump_volumes(payload: PumpSettlementWrite, db: Session = Depends(get_
                         "tank_id": tank.id, "tank_name": tank.name,
                         "fuel_type_id": tank.fuel_type_id,
                         "opening_meter": float(opening), "volume": float(volume),
+                        "system_closing_meter": float(opening + volume),
+                        "manual_closing_meter": float(manual_closing) if manual_closing is not None else None,
+                        "meter_volume": float(meter_volume) if meter_volume is not None else None,
+                        "entered_volume": float(entered_volume) if entered_volume is not None else None,
+                        "variance_litres": (
+                            float(meter_volume - entered_volume)
+                            if meter_volume is not None and entered_volume is not None else None
+                        ),
                         "closing_meter": float(closing)})
     db.flush()
+    for pump_id, closing in closing_by_pump.items():
+        db.query(models.FuelPump).filter_by(id=pump_id).update(
+            {models.FuelPump.meter_reading: closing},
+            synchronize_session=False,
+        )
     for fuel_id, total in fuel_totals.items():
         reading = db.query(models.ShiftFuelReading).filter_by(
             shift_id=shift.id, fuel_type_id=fuel_id).first()
@@ -338,6 +383,15 @@ def redeem_voucher(token: str, payload: VoucherRedeem,
         payment_method=voucher.payment_method, served_by=current_user.id,
         entry_source="voucher", notes=f"Voucher {voucher.token}")
     db.add(sale); db.flush()
+    # Voucher redemption is the moment fuel is dispensed, so advance the
+    # pump's automatic totaliser only after its sale row is created.
+    db.query(models.FuelPump).filter_by(id=pump.id).update(
+        {
+            models.FuelPump.meter_reading:
+                models.FuelPump.meter_reading + Decimal(str(voucher.volume))
+        },
+        synchronize_session=False,
+    )
     voucher.status = "redeemed"; voucher.redeemed_by = current_user.id
     voucher.pump_id = pump.id; voucher.sale_id = sale.id; voucher.redeemed_at = datetime.now().astimezone()
     db.commit()

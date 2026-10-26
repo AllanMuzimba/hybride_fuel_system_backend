@@ -39,9 +39,37 @@ def _visible_user(db: Session, user_id: int, current_user: models.User) -> model
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    if current_user.role not in PLATFORM_ROLES and user.company_id != current_user.company_id:
-        raise HTTPException(status_code=404, detail="User not found in your company")
+    if current_user.role not in PLATFORM_ROLES:
+        membership = db.query(models.UserCompanyMembership).filter(
+            models.UserCompanyMembership.user_id == user.id,
+            models.UserCompanyMembership.company_id == current_user.company_id,
+            models.UserCompanyMembership.is_active.is_(True),
+        ).first()
+        if membership is None:
+            raise HTTPException(status_code=404, detail="User not found in your company")
     return user
+
+
+def _users_with_company_ids(db: Session, users: List[models.User]):
+    if not users:
+        return []
+    ids = [user.id for user in users]
+    memberships = db.query(models.UserCompanyMembership).join(
+        models.Company, models.Company.id == models.UserCompanyMembership.company_id
+    ).filter(
+        models.UserCompanyMembership.user_id.in_(ids),
+        models.UserCompanyMembership.is_active.is_(True),
+        models.Company.is_active.is_(True),
+    ).all()
+    companies_by_user = {}
+    for membership in memberships:
+        companies_by_user.setdefault(membership.user_id, []).append(membership.company_id)
+    result = []
+    for user in users:
+        row = schemas.UserOut.model_validate(user).model_dump()
+        row["company_ids"] = sorted(set(companies_by_user.get(user.id, [])))
+        result.append(row)
+    return result
 
 
 @router.post("", response_model=schemas.UserOut, status_code=201)
@@ -70,6 +98,16 @@ def create_user(
         if not branch or branch.company_id != company_id:
             raise HTTPException(status_code=404, detail="Branch not found in the selected company")
 
+    company_ids = set(payload.company_ids or [])
+    company_ids.add(company_id)
+    if len(company_ids) > 1 and current_user.role != "developer":
+        raise HTTPException(status_code=403, detail="Only a developer can link a user to multiple companies")
+    active_companies = db.query(models.Company.id).filter(
+        models.Company.id.in_(company_ids), models.Company.is_active.is_(True)
+    ).all()
+    if {row[0] for row in active_companies} != company_ids:
+        raise HTTPException(status_code=404, detail="One or more selected companies are not active")
+
     user = models.User(
         company_id=company_id,
         branch_id=payload.branch_id,
@@ -81,9 +119,18 @@ def create_user(
         email=payload.email.strip().lower() if payload.email else None,
     )
     db.add(user)
+    db.flush()
+    db.add_all([
+        models.UserCompanyMembership(
+            user_id=user.id,
+            company_id=linked_company_id,
+            branch_id=payload.branch_id if linked_company_id == company_id else None,
+        )
+        for linked_company_id in company_ids
+    ])
     db.commit()
     db.refresh(user)
-    return user
+    return _users_with_company_ids(db, [user])[0]
 
 
 @router.get("", response_model=List[schemas.UserOut])
@@ -92,13 +139,17 @@ def list_users(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.require_role("supervisor", "manager", "director", "developer", "dev_support")),
 ):
-    query = db.query(models.User)
+    query = db.query(models.User).join(
+        models.UserCompanyMembership,
+        models.UserCompanyMembership.user_id == models.User.id,
+    ).filter(models.UserCompanyMembership.is_active.is_(True))
     if current_user.role in PLATFORM_ROLES:
         if company_id is not None:
-            query = query.filter(models.User.company_id == company_id)
+            query = query.filter(models.UserCompanyMembership.company_id == company_id)
     else:
-        query = query.filter(models.User.company_id == current_user.company_id)
-    return query.order_by(models.User.company_id, models.User.full_name).limit(2000).all()
+        query = query.filter(models.UserCompanyMembership.company_id == current_user.company_id)
+    users = query.distinct().order_by(models.User.company_id, models.User.full_name).limit(2000).all()
+    return _users_with_company_ids(db, users)
 
 
 @router.patch("/{user_id}", response_model=schemas.UserOut)
@@ -164,9 +215,60 @@ def update_user(
         if key == "username" or key == "full_name":
             value = value.strip()
         setattr(target, key, value)
+    if "company_id" in changes:
+        primary_membership = db.query(models.UserCompanyMembership).filter_by(
+            user_id=target.id, company_id=target.company_id
+        ).first()
+        if primary_membership is None:
+            db.add(models.UserCompanyMembership(
+                user_id=target.id,
+                company_id=target.company_id,
+                branch_id=target.branch_id,
+            ))
+        else:
+            primary_membership.is_active = True
+            primary_membership.branch_id = target.branch_id
     db.commit()
     db.refresh(target)
-    return target
+    return _users_with_company_ids(db, [target])[0]
+
+
+@router.put("/{user_id}/companies", response_model=schemas.UserOut)
+def update_user_companies(
+    user_id: int,
+    payload: schemas.UserCompaniesUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.require_role("developer")),
+):
+    target = _visible_user(db, user_id, current_user)
+    company_ids = set(payload.company_ids)
+    company_ids.add(target.company_id)
+    active_companies = db.query(models.Company.id).filter(
+        models.Company.id.in_(company_ids), models.Company.is_active.is_(True)
+    ).all()
+    if {row[0] for row in active_companies} != company_ids:
+        raise HTTPException(status_code=404, detail="One or more selected companies are not active")
+
+    memberships = db.query(models.UserCompanyMembership).filter(
+        models.UserCompanyMembership.user_id == target.id
+    ).all()
+    by_company = {membership.company_id: membership for membership in memberships}
+    for membership in memberships:
+        membership.is_active = membership.company_id in company_ids
+        if membership.company_id == target.company_id:
+            membership.branch_id = target.branch_id
+        elif membership.company_id in company_ids:
+            membership.branch_id = None
+    for company_id in company_ids - by_company.keys():
+        db.add(models.UserCompanyMembership(
+            user_id=target.id,
+            company_id=company_id,
+            branch_id=target.branch_id if company_id == target.company_id else None,
+            is_active=True,
+        ))
+    db.commit()
+    db.refresh(target)
+    return _users_with_company_ids(db, [target])[0]
 
 
 @router.delete("/{user_id}", response_model=schemas.UserOut)
@@ -183,4 +285,4 @@ def deactivate_user(
     target.is_active = False
     db.commit()
     db.refresh(target)
-    return target
+    return _users_with_company_ids(db, [target])[0]

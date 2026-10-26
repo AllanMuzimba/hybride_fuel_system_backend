@@ -13,6 +13,7 @@ from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import set_committed_value
 
 from . import models
 from .database import get_db
@@ -61,6 +62,19 @@ def get_current_user(
     user = db.query(models.User).filter(models.User.id == int(user_id)).first()
     if user is None or not user.is_active:
         raise credentials_exception
+    company_id = payload.get("company_id", user.company_id)
+    membership = db.query(models.UserCompanyMembership).filter(
+        models.UserCompanyMembership.user_id == user.id,
+        models.UserCompanyMembership.company_id == company_id,
+        models.UserCompanyMembership.is_active.is_(True),
+    ).first()
+    if membership is None:
+        raise credentials_exception
+    # Routers consistently scope data through current_user.company_id and
+    # branch_id. Mark the token's verified membership as the loaded DB value
+    # so ordinary commits cannot accidentally move the user's home company.
+    set_committed_value(user, "company_id", membership.company_id)
+    set_committed_value(user, "branch_id", membership.branch_id)
     return user
 
 

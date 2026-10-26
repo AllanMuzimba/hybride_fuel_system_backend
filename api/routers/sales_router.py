@@ -155,6 +155,17 @@ def record_sale(
         sale_date=recorded_at,
     )
     db.add(sale)
+    if pump is not None:
+        # Keep the automatic pump totaliser in sync with accepted live sales.
+        # Use an atomic SQL increment so concurrent cashier/attendant sales
+        # cannot overwrite each other's meter updates.
+        db.query(models.FuelPump).filter_by(id=pump.id).update(
+            {
+                models.FuelPump.meter_reading:
+                    models.FuelPump.meter_reading + Decimal(str(payload.volume))
+            },
+            synchronize_session=False,
+        )
     try:
         db.commit()
     except DBAPIError as exc:

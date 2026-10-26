@@ -46,6 +46,62 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     )
 
 
+@router.get("/companies", response_model=list[schemas.CompanyAccessOut])
+def list_my_companies(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    memberships = (
+        db.query(models.UserCompanyMembership, models.Company)
+        .join(models.Company, models.Company.id == models.UserCompanyMembership.company_id)
+        .filter(
+            models.UserCompanyMembership.user_id == current_user.id,
+            models.UserCompanyMembership.is_active.is_(True),
+            models.Company.is_active.is_(True),
+        )
+        .order_by(models.Company.name)
+        .all()
+    )
+    return [
+        {"id": company.id, "name": company.name, "branch_id": membership.branch_id}
+        for membership, company in memberships
+    ]
+
+
+@router.post("/switch-company", response_model=schemas.Token)
+def switch_company(
+    payload: schemas.CompanySwitch,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    membership = db.query(models.UserCompanyMembership).filter(
+        models.UserCompanyMembership.user_id == current_user.id,
+        models.UserCompanyMembership.company_id == payload.company_id,
+        models.UserCompanyMembership.is_active.is_(True),
+    ).first()
+    company = db.query(models.Company).filter(
+        models.Company.id == payload.company_id,
+        models.Company.is_active.is_(True),
+    ).first()
+    if membership is None or company is None:
+        raise HTTPException(status_code=403, detail="You are not linked to that active company")
+
+    token = auth.create_access_token({
+        "sub": str(current_user.id),
+        "role": current_user.role,
+        "company_id": membership.company_id,
+        "branch_id": membership.branch_id,
+    })
+    return schemas.Token(
+        access_token=token,
+        role=current_user.role,
+        user_id=current_user.id,
+        full_name=current_user.full_name,
+        company_id=membership.company_id,
+        branch_id=membership.branch_id,
+    )
+
+
 @router.get("/me", response_model=schemas.UserOut)
 def read_me(current_user: models.User = Depends(auth.get_current_user)):
     return current_user

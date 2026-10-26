@@ -21,7 +21,7 @@ BEGIN;
 -- ---------------------------------------------------------------------
 -- 1. ENUM TYPES
 -- ---------------------------------------------------------------------
-CREATE TYPE user_role       AS ENUM ('attendant', 'supervisor', 'manager', 'director', 'developer', 'dev_support', 'secretary');
+CREATE TYPE user_role       AS ENUM ('attendant', 'supervisor', 'manager', 'director', 'developer', 'dev_support', 'secretary', 'cashier');
 CREATE TYPE payment_status  AS ENUM ('unpaid', 'partial', 'paid');
 CREATE TYPE payment_method  AS ENUM ('cash', 'card', 'mobile_money', 'account');
 CREATE TYPE customer_txn_type AS ENUM ('fill_up', 'payment', 'adjustment');
@@ -93,6 +93,20 @@ CREATE UNIQUE INDEX uq_users_email_ci
 CREATE UNIQUE INDEX uq_users_phone_digits
     ON users(regexp_replace(phone, '[^0-9]', '', 'g'))
     WHERE phone IS NOT NULL AND regexp_replace(phone, '[^0-9]', '', 'g') <> '';
+
+CREATE TABLE user_company_memberships (
+    id              SERIAL PRIMARY KEY,
+    user_id         INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    company_id      INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    branch_id       INT REFERENCES company_branches(id) ON DELETE SET NULL,
+    is_active       BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(user_id, company_id)
+);
+CREATE INDEX idx_user_company_memberships_user ON user_company_memberships(user_id);
+CREATE INDEX idx_user_company_memberships_company ON user_company_memberships(company_id);
+INSERT INTO user_company_memberships (user_id, company_id, branch_id)
+SELECT id, company_id, branch_id FROM users;
 
 -- companies.registered_by / confirmed_by -> users(id). Declared here rather
 -- than inside the companies table above because the two tables reference each

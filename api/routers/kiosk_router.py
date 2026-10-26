@@ -40,6 +40,10 @@ def _require_stock_role(user):
 
 
 def _permit(db, user, action):
+    # Developers need unrestricted test access. Cashiers always need the POS
+    # catalogue and checkout for their assigned company.
+    if user.role in ("developer", "cashier"):
+        return _settings(db, user.company_id)
     config = _settings(db, user.company_id)
     roles = (config.kiosk_sell_roles if action == "sell"
              else list(set(config.kiosk_view_roles + config.kiosk_sell_roles)))

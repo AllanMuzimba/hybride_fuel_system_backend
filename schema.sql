@@ -1290,6 +1290,7 @@ CREATE TABLE kiosk_products (
     branch_id INT NOT NULL REFERENCES company_branches(id),
     category_id INT NOT NULL REFERENCES product_categories(id),
     name VARCHAR(150) NOT NULL,
+    barcode VARCHAR(64),
     cost_price NUMERIC(12,2) NOT NULL CHECK(cost_price >= 0),
     sell_price NUMERIC(12,2) NOT NULL CHECK(sell_price >= 0),
     stock_quantity NUMERIC(14,3) NOT NULL DEFAULT 0 CHECK(stock_quantity >= 0),
@@ -1297,6 +1298,8 @@ CREATE TABLE kiosk_products (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE(branch_id, name)
 );
+CREATE UNIQUE INDEX uq_kiosk_products_company_barcode
+    ON kiosk_products(company_id, barcode) WHERE barcode IS NOT NULL;
 CREATE TABLE kiosk_sales (
     id SERIAL PRIMARY KEY,
     company_id INT NOT NULL REFERENCES companies(id),

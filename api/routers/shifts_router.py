@@ -33,7 +33,7 @@ router = APIRouter(prefix="/shifts", tags=["shifts"])
 # 'Finance' has no schema role of its own - director/developer is the
 # ownership/finance side, supervisor is the branch's shift supervisor.
 SHIFT_MANAGE_ROLES = ("supervisor", "manager", "developer")
-VOLUME_ENTRY_ROLES = ("supervisor",)
+VOLUME_ENTRY_ROLES = ("supervisor", "developer")
 
 
 @router.post("/{shift_id}/settlement", response_model=schemas.ShiftOut)
@@ -680,11 +680,14 @@ def close_shift(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user),
 ):
-    """Close a shift. Only a supervisor may enter closing readings and close it.
+    """Close a shift. Supervisors and developer test accounts may close it.
     Everyone still signed in is marked as having left at close time."""
     shift = get_shift_or_404(db, shift_id, current_user)
-    if current_user.role != "supervisor":
-        raise HTTPException(status_code=403, detail="Only a supervisor can close a shift")
+    if current_user.role not in ("supervisor", "developer"):
+        raise HTTPException(
+            status_code=403,
+            detail="Only a supervisor or developer test account can close a shift",
+        )
     if shift.status != "open":
         raise HTTPException(status_code=400, detail="That shift is already closed")
     readings = db.query(models.ShiftFuelReading).filter(

@@ -16,7 +16,7 @@ def customer_topups(
     end_date: date,
     branch_id: Optional[int] = None,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("manager", "director", "developer", "supervisor", "dev_support")),
+    current_user: models.User = Depends(auth.require_role("manager", "director", "developer")),
 ):
     """Auditable customer receipts with the branch and signed-in receiver."""
     if branch_id is not None:
@@ -47,7 +47,7 @@ def activity_log(
     branch_id: Optional[int] = None,
     activity_type: Optional[str] = None,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("manager", "director", "developer", "supervisor", "dev_support")),
+    current_user: models.User = Depends(auth.require_role("manager", "director", "developer")),
 ):
     """HQ audit trail: every sale, receipt, supplier/customer payment,
     expense and price change across your company (or one branch), newest
@@ -75,7 +75,7 @@ def daily_fuel_report(
     branch_id: Optional[int] = None,
     fuel_type_id: Optional[int] = None,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("manager", "director", "developer", "supervisor", "dev_support")),
+    current_user: models.User = Depends(auth.require_role("manager", "director", "developer")),
 ):
     """Volume report per branch per fuel type per day, for any date range:
     opening stock, received, sold (total), credit portion of sold, closing
@@ -99,7 +99,7 @@ def financial_report(
     end_date: date,
     branch_id: Optional[int] = None,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("manager", "director", "developer", "supervisor", "dev_support")),
+    current_user: models.User = Depends(auth.require_role("manager", "director", "developer")),
 ):
     """Cash-basis financial report per branch per day: opening balance,
     income (cash/card/mobile-money sales + debt collected that day),
@@ -116,7 +116,7 @@ def company_financial_totals(
     start_date: date,
     end_date: date,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("manager", "director", "developer", "supervisor", "dev_support")),
+    current_user: models.User = Depends(auth.require_role("manager", "director", "developer")),
 ):
     """Company-wide rollup per day: every branch's income/expenses summed,
     plus company-wide (head-office) expenses that aren't tied to one branch.
@@ -139,7 +139,7 @@ def cash_report(
     end_date: date,
     branch_id: Optional[int] = None,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("manager", "director", "developer", "supervisor", "dev_support")),
+    current_user: models.User = Depends(auth.require_role("manager", "director", "developer")),
 ):
     """Physical cash movement per branch. Old transactions with an unknown
     payment channel are excluded instead of being guessed as cash."""
@@ -187,7 +187,7 @@ def expense_report(
     branch_id: Optional[int] = None,
     category_id: Optional[int] = None,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("manager", "director", "developer", "supervisor", "dev_support")),
+    current_user: models.User = Depends(auth.require_role("manager", "director", "developer")),
 ):
     """Expenses for a date range (optionally filtered by branch/category),
     each with its category name attached — includes the auto-generated
@@ -210,7 +210,7 @@ def credit_fuel_report(
     branch_id: Optional[int] = None,
     customer_id: Optional[int] = None,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("manager", "director", "developer", "supervisor", "dev_support")),
+    current_user: models.User = Depends(auth.require_role("manager", "director", "developer")),
 ):
     """Fuel given to customers on credit for a date range — physically sold,
     but not counted as realized income until the customer pays it off.
@@ -233,7 +233,7 @@ def full_summary(
     end_date: date,
     branch_id: Optional[int] = None,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("manager", "director", "developer", "supervisor", "dev_support")),
+    current_user: models.User = Depends(auth.require_role("manager", "director", "developer")),
 ):
     """Everything balanced together for a date range, scoped to your company
     (optionally one branch): fuel volumes (by branch + type), the cash
@@ -296,7 +296,7 @@ def refresh_reports(
     end_date: date,
     branch_id: Optional[int] = None,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_role("manager", "director", "developer", "supervisor", "dev_support")),
+    current_user: models.User = Depends(auth.require_role("manager", "director", "developer")),
 ):
     """Force-recompute daily_fuel_reports and daily_financial_summary for a
     date range — use after loading historical data or correcting a

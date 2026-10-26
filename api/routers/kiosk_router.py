@@ -13,6 +13,14 @@ from .shifts_router import require_on_shift, require_realtime_shift
 
 router = APIRouter(prefix="/kiosk", tags=["kiosk"])
 DEFAULT_ROLES = ["manager", "supervisor", "developer", "cashier"]
+# Viewing kiosk data (the POS catalogue, the standalone stock page, kiosk
+# reports) is broader than selling: the stock page is for these roles.
+DEFAULT_VIEW_ROLES = DEFAULT_ROLES + ["secretary", "director", "dev_support"]
+# Kiosk stock management lives on its own page, never inside the POS, and
+# cashiers/attendants are refused here no matter what the settings allow.
+STOCK_ROLES = (
+    "supervisor", "manager", "secretary", "director", "developer", "dev_support",
+)
 # Kiosk sales lists and daily reports live in the Reports page — the POS
 # itself never exposes them, so POS-only roles (cashier, attendant,
 # secretary) are refused even if the kiosk view roles allow them.
@@ -23,7 +31,12 @@ def _settings(db, company_id):
     row = db.query(models.CompanySalesSettings).get(company_id)
     return row or models.CompanySalesSettings(
         company_id=company_id, kiosk_enabled=True,
-        kiosk_sell_roles=DEFAULT_ROLES, kiosk_view_roles=DEFAULT_ROLES)
+        kiosk_sell_roles=DEFAULT_ROLES, kiosk_view_roles=DEFAULT_VIEW_ROLES)
+
+
+def _require_stock_role(user):
+    if user.role not in STOCK_ROLES:
+        raise HTTPException(403, "Your role cannot manage kiosk stock")
 
 
 def _permit(db, user, action):
@@ -71,6 +84,7 @@ def categories(db: Session = Depends(get_db), user: models.User = Depends(auth.g
 @router.post("/categories")
 def create_category(payload: schemas.ProductCategoryCreate, db: Session = Depends(get_db),
                     user: models.User = Depends(auth.get_current_user)):
+    _require_stock_role(user)
     _permit(db, user, "view")
     row = models.ProductCategory(company_id=user.company_id, name=payload.name.strip())
     db.add(row)
@@ -109,6 +123,7 @@ def products(branch_id: Optional[int] = None, active_only: bool = False,
 @router.post("/products")
 def create_product(payload: schemas.KioskProductCreate, db: Session = Depends(get_db),
                    user: models.User = Depends(auth.get_current_user)):
+    _require_stock_role(user)
     _permit(db, user, "view")
     auth.verify_branch_access(user, payload.branch_id, db)
     category = db.query(models.ProductCategory).filter_by(
@@ -129,6 +144,7 @@ def create_product(payload: schemas.KioskProductCreate, db: Session = Depends(ge
 @router.patch("/products/{product_id}")
 def update_product(product_id: int, payload: schemas.KioskProductUpdate,
                    db: Session = Depends(get_db), user: models.User = Depends(auth.get_current_user)):
+    _require_stock_role(user)
     _permit(db, user, "view")
     row = db.query(models.KioskProduct).filter_by(id=product_id, company_id=user.company_id).first()
     if not row:

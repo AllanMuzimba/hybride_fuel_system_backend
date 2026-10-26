@@ -379,6 +379,7 @@ class KioskProduct(Base):
     branch_id = Column(Integer, ForeignKey("company_branches.id"), nullable=False)
     category_id = Column(Integer, ForeignKey("product_categories.id"), nullable=False)
     name = Column(String(150), nullable=False)
+    barcode = Column(String(64))   # typed or scanned at the POS
     cost_price = Column(Numeric(12, 2), nullable=False, default=0)
     sell_price = Column(Numeric(12, 2), nullable=False, default=0)
     stock_quantity = Column(Numeric(14, 3), nullable=False, default=0)

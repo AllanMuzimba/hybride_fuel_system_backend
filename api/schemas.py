@@ -137,7 +137,7 @@ class BranchOut(BaseModel):
 
 # ---------------------------------------------------------------- users ----
 UserRole = Literal["attendant", "supervisor", "manager", "director", "developer",
-                   "dev_support", "secretary"]
+                   "dev_support", "secretary", "cashier"]
 
 
 class UserCreate(BaseModel):
@@ -565,6 +565,7 @@ class KioskProductCreate(BaseModel):
     branch_id: int
     category_id: int
     name: str = Field(min_length=1, max_length=150)
+    barcode: Optional[str] = Field(default=None, max_length=64)
     cost_price: float = Field(ge=0)
     sell_price: float = Field(ge=0)
     stock_quantity: float = Field(default=0, ge=0)
@@ -573,6 +574,7 @@ class KioskProductCreate(BaseModel):
 class KioskProductUpdate(BaseModel):
     category_id: Optional[int] = None
     name: Optional[str] = Field(default=None, min_length=1, max_length=150)
+    barcode: Optional[str] = Field(default=None, max_length=64)
     cost_price: Optional[float] = Field(default=None, ge=0)
     sell_price: Optional[float] = Field(default=None, ge=0)
     stock_quantity: Optional[float] = Field(default=None, ge=0)

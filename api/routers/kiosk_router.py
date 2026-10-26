@@ -12,7 +12,7 @@ from ..database import get_db
 from .shifts_router import require_on_shift, require_realtime_shift
 
 router = APIRouter(prefix="/kiosk", tags=["kiosk"])
-DEFAULT_ROLES = ["manager", "supervisor", "developer"]
+DEFAULT_ROLES = ["manager", "supervisor", "developer", "cashier"]
 # Kiosk sales lists and daily reports live in the Reports page — the POS
 # itself never exposes them, so POS-only roles (cashier, attendant,
 # secretary) are refused even if the kiosk view roles allow them.
@@ -85,7 +85,8 @@ def create_category(payload: schemas.ProductCategoryCreate, db: Session = Depend
 
 def _product(row, category):
     return {"id": row.id, "branch_id": row.branch_id, "category_id": row.category_id,
-            "category_name": category, "name": row.name, "cost_price": float(row.cost_price),
+            "category_name": category, "name": row.name, "barcode": row.barcode,
+            "cost_price": float(row.cost_price),
             "sell_price": float(row.sell_price), "stock_quantity": float(row.stock_quantity),
             "is_active": row.is_active}
 

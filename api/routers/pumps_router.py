@@ -276,7 +276,7 @@ def settle_pump_volumes(payload: PumpSettlementWrite, db: Session = Depends(get_
 @router.post("/vouchers")
 def create_voucher(payload: VoucherCreate, db: Session = Depends(get_db),
                    current_user: models.User = Depends(
-                       auth.require_role("secretary", "supervisor", "manager", "director", "developer"))):
+                       auth.require_role("attendant", "cashier", "secretary", "supervisor", "manager", "director", "developer"))):
     auth.verify_branch_access(current_user, payload.branch_id, db)
     shift = require_realtime_shift(db, payload.branch_id)
     price = db.query(models.BranchFuelPrice).get((payload.branch_id, payload.fuel_type_id))
@@ -309,19 +309,27 @@ def get_voucher(token: str, db: Session = Depends(get_db),
 @router.post("/vouchers/{token}/redeem")
 def redeem_voucher(token: str, payload: VoucherRedeem,
                    db: Session = Depends(get_db),
-                   current_user: models.User = Depends(auth.require_role("attendant"))):
+                   current_user: models.User = Depends(
+                       auth.require_role("attendant", "supervisor", "manager", "developer"))):
     voucher = db.query(models.FuelVoucher).filter(
         models.FuelVoucher.token == token.upper()).with_for_update().first()
     if not voucher or voucher.status != "issued":
         raise HTTPException(status_code=409, detail="Voucher is invalid or already used")
     shift = db.query(models.Shift).get(voucher.shift_id)
     require_on_shift(db, shift, current_user)
-    assignment = db.query(models.ShiftPumpAssignment).filter_by(
-        shift_id=shift.id, pump_id=payload.pump_id, user_id=current_user.id).first()
     pump = db.query(models.FuelPump).get(payload.pump_id)
     tank = db.query(models.FuelTank).get(pump.tank_id) if pump else None
-    if not assignment or not pump or not tank or tank.fuel_type_id != voucher.fuel_type_id:
-        raise HTTPException(status_code=403, detail="Select one of your assigned pumps for this fuel")
+    if (not pump or not tank or pump.branch_id != voucher.branch_id
+            or tank.fuel_type_id != voucher.fuel_type_id):
+        raise HTTPException(status_code=403, detail="Select a pump at this branch for this fuel")
+    if current_user.role == "attendant":
+        # Attendants only dispense through pumps assigned to them this shift.
+        assignment = db.query(models.ShiftPumpAssignment).filter_by(
+            shift_id=shift.id, pump_id=pump.id, user_id=current_user.id).first()
+        if not assignment:
+            raise HTTPException(status_code=403, detail="Select one of your assigned pumps for this fuel")
+    else:
+        auth.verify_branch_access(current_user, voucher.branch_id, db)
     price = db.query(models.BranchFuelPrice).get((voucher.branch_id, voucher.fuel_type_id))
     sale = models.Sale(branch_id=voucher.branch_id, fuel_type_id=voucher.fuel_type_id,
         customer_id=voucher.customer_id, shift_id=shift.id, pump_id=pump.id,

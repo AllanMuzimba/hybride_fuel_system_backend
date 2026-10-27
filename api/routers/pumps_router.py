@@ -108,7 +108,7 @@ def create_pump(payload: PumpWrite, db: Session = Depends(get_db),
 @router.post("/assignments")
 def assign_pump(payload: PumpAssignmentWrite, db: Session = Depends(get_db),
                 current_user: models.User = Depends(
-                    auth.require_role("supervisor", "manager", "director", "developer"))):
+                    auth.require_role("supervisor", "manager", "director", "developer", "dev_support"))):
     shift = db.query(models.Shift).get(payload.shift_id)
     pump = db.query(models.FuelPump).get(payload.pump_id)
     user = db.query(models.User).get(payload.user_id)

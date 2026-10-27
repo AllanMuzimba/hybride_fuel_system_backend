@@ -33,6 +33,13 @@ router = APIRouter(prefix="/shifts", tags=["shifts"])
 # 'Finance' has no schema role of its own - director/developer is the
 # ownership/finance side, supervisor is the branch's shift supervisor.
 SHIFT_MANAGE_ROLES = ("supervisor", "manager", "developer")
+ATTENDANT_ASSIGN_ROLES = (
+    "developer",
+    "manager",
+    "supervisor",
+    "director",
+    "dev_support",
+)
 VOLUME_ENTRY_ROLES = ("supervisor", "developer")
 
 
@@ -634,6 +641,54 @@ def join_shift(
         row.left_at = None
         db.commit()
         db.refresh(shift)
+    return build_shift_out(db, shift, current_user.id)
+
+
+@router.post("/{shift_id}/attendees", response_model=schemas.ShiftOut)
+def assign_attendant(
+    shift_id: int,
+    payload: schemas.ShiftAttendantAssign,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.require_role(*ATTENDANT_ASSIGN_ROLES)),
+):
+    """Put a fuel attendant on an open shift on a manager's behalf."""
+    shift = get_shift_or_404(db, shift_id, current_user)
+    if shift.status != "open":
+        raise HTTPException(status_code=400, detail="That shift is already closed")
+
+    attendant = db.query(models.User).filter(
+        models.User.id == payload.user_id,
+        models.User.role == "attendant",
+        models.User.is_active.is_(True),
+    ).first()
+    if attendant is None:
+        raise HTTPException(status_code=404, detail="Active fuel attendant not found")
+    membership = db.query(models.UserCompanyMembership).filter(
+        models.UserCompanyMembership.user_id == attendant.id,
+        models.UserCompanyMembership.company_id == shift.company_id,
+        models.UserCompanyMembership.is_active.is_(True),
+    ).first()
+    if membership is None:
+        raise HTTPException(status_code=404, detail="Fuel attendant not found in this company")
+    attendant_branch = membership.branch_id or attendant.branch_id
+    if attendant_branch is not None and attendant_branch != shift.branch_id:
+        raise HTTPException(
+            status_code=400,
+            detail="That fuel attendant is assigned to a different branch",
+        )
+
+    row = db.query(models.ShiftAttendance).filter(
+        models.ShiftAttendance.shift_id == shift.id,
+        models.ShiftAttendance.user_id == attendant.id,
+    ).first()
+    if row is None:
+        db.add(models.ShiftAttendance(shift_id=shift.id, user_id=attendant.id))
+    elif row.left_at is not None:
+        row.left_at = None
+    else:
+        raise HTTPException(status_code=409, detail="That fuel attendant is already on shift")
+    db.commit()
+    db.refresh(shift)
     return build_shift_out(db, shift, current_user.id)
 
 

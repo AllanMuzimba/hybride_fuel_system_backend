@@ -685,6 +685,10 @@ class ShiftLeaveCreate(BaseModel):
     cash_received: Optional[float] = Field(default=None, ge=0)
 
 
+class ShiftAttendantAssign(BaseModel):
+    user_id: int
+
+
 class ShiftModeUpdate(BaseModel):
     entry_mode: EntryMode
 
